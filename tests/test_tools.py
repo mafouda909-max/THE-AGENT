@@ -270,3 +270,51 @@ def test_parse_tool_args_json_string():
 
 def test_parse_tool_args_bad_string():
     assert _parse_tool_args("not-json{{{") == {}
+
+# ---------------- 🌐 Frontier & schedule ----------------
+
+def test_frontier_guidance_without_key(monkeypatch):
+    import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "FRONTIER_API_KEY", "")
+    out = Tools.use_frontier_model("ما هي بايثون؟")
+    assert "FRONTIER_API_KEY" in out  # توجيهات الإعداد المجاني موجودة
+
+
+def test_frontier_chat_requires_key(monkeypatch):
+    import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "FRONTIER_API_KEY", "")
+    ok, msg = agent_mod.frontier_chat([{"role": "user", "content": "hi"}])
+    assert ok is False and "FRONTIER_API_KEY" in msg
+
+
+def test_battle_without_any_model(monkeypatch):
+    import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "FRONTIER_API_KEY", "")
+    out = Tools.battle_models("test query")
+    assert "Frontier" in out  # يرشد لمفتاح مجاني أو موديل ثانٍ
+
+
+def test_parse_schedule():
+    cron, hm = Tools._parse_schedule("09:30")
+    assert cron == "30 9 * * *" and hm == "09:30"
+    cron2, _ = Tools._parse_schedule("*/15 * * * *")
+    assert cron2 == "*/15 * * * *"
+    bad, _ = Tools._parse_schedule("كلام فاضي")
+    assert bad is None
+
+
+def test_schedule_rejects_every_minute(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SCHEDULE_DRY_RUN", "1")
+    assert "مرفوضة" in Tools.schedule_task("* * * * *", "echo x")
+
+
+def test_schedule_dry_run(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SCHEDULE_DRY_RUN", "1")
+    out = Tools.schedule_task("09:30", "echo hello-sched")
+    assert "30 9 * * *" in out
+    assert "hello-sched" in Path("scheduled_tasks.txt").read_text(encoding="utf-8")

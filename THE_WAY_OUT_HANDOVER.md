@@ -1,6 +1,6 @@
 # 📋 THE WAY OUT — حزمة تقرير التسليم (Handover Package)
 
-> آخر تحديث: 2026-09-04 — الفرع: `arena/01a06eb5-the-agent`
+> آخر تحديث: 2026-09-05 — النسخة: v2.1.0 (39/39 أداة حقيقية — صفر مُكيّفة) — الفرع: `arena/01a06eb5-the-agent`
 > انسخ هذا الملف مع `agent.py` إلى أي محادثة جديدة لمواصلة العمل فوراً دون البدء من الصفر.
 
 ---
@@ -54,7 +54,10 @@
    سكربتات PowerShell (`scripts/setup.ps1` و `scripts/run.ps1`)،
    اختبارات (`tests/test_tools.py` — 40+ اختبار)، ووثائق (`docs/`).
 6. على جهاز المستخدم: تم تثبيت **Python 3.14.7** بنجاح + التأكد من
-   `qwen2.5-coder:1.5b` في `ollama list` — بانتظار نقل ملفات v2.0 والفحص.
+   `qwen2.5-coder:1.5b` في `ollama list` — بانتظار نقل ملفات v2.1 والفحص.
+7. **v2.1.0** (إصلاح الأدوات الـ3): عميل Frontier حقيقي بمفاتيح مجانية
+   (OpenRouter/Groq/Gemini) + تحكيم تلقائي في `battle_models` +
+   جدولة crontab حقيقية على Linux/macOS + وضع `SCHEDULE_DRY_RUN`.
 
 ### 📐 ما تم تصميمه كمعمارية مستقبلية جاهزة للتطبيق (Architectural Blueprints)
 

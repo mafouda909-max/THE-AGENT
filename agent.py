@@ -32,11 +32,12 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -70,6 +71,9 @@ AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "8"))
 AGENT_TIMEOUT = int(os.getenv("AGENT_TIMEOUT", "60"))
 AGENT_TOOLSET = os.getenv("AGENT_TOOLSET", "full").strip().lower()
 DEFAULT_PORT = int(os.getenv("DEFAULT_PORT", "5000"))
+FRONTIER_API_KEY = os.getenv("FRONTIER_API_KEY", "").strip()
+FRONTIER_BASE_URL = os.getenv("FRONTIER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+FRONTIER_MODEL = os.getenv("FRONTIER_MODEL", "qwen/qwen-2.5-coder-32b-instruct:free").strip()
 
 # ===========================================================================
 # 🧠 SYSTEM PROMPT — مطابِق للماستر برومبت (v10.0 ULTIMATE)
@@ -147,6 +151,68 @@ FIRST_RUN_GREETING = """🚀 أهلاً وسهلاً! أنا **THE WAY OUT Agent
 - "راجع الكود ده وقولي رأيك"
 
 يلا نبدأ! ⚡"""
+
+
+# ---------------------------------------------------------------------------
+# 🌐 Frontier provider — موديلات قوية عبر API متوافق مع OpenAI (خطط مجانية)
+# يدعم: OpenRouter (موديلات :free) / Groq (طبقة مجانية) / Gemini (حصة مجانية)
+# ---------------------------------------------------------------------------
+FRONTIER_SETUP_HELP = """💡 للإجابات الأقوى مجاناً (دقيقتين):
+1) OpenRouter (الأسهل): اعمل حساب على https://openrouter.ai وانسخ مفتاحاً من Keys، ثم في .env:
+   FRONTIER_API_KEY=sk-or-v1-xxx
+   FRONTIER_MODEL=qwen/qwen-2.5-coder-32b-instruct:free
+   (قائمة المجاني تتغير — راجع: openrouter.ai/models?q=free)
+2) Groq (الأسرع): مفتاح مجاني من https://console.groq.com ثم:
+   FRONTIER_BASE_URL=https://api.groq.com/openai/v1
+   FRONTIER_MODEL=llama-3.3-70b-versatile
+3) Gemini (حصة مجانية كبيرة): مفتاح من https://aistudio.google.com ثم:
+   FRONTIER_BASE_URL=https://generativelanguage.googleapis.com/v1beta1/openai
+   FRONTIER_MODEL=gemini-2.0-flash"""
+
+
+def frontier_configured() -> bool:
+    return bool(FRONTIER_API_KEY)
+
+
+def frontier_chat(messages: list, model: str | None = None,
+                  timeout: int = 120) -> tuple[bool, str]:
+    """محادثة عبر مزود OpenAI-compatible. ترجع (نجاح, النص/الخطأ)."""
+    if not FRONTIER_API_KEY:
+        return False, "FRONTIER_API_KEY غير مضبوط في .env"
+    mdl = (model or FRONTIER_MODEL or "").strip()
+    if not mdl:
+        return False, "FRONTIER_MODEL غير مضبوط في .env"
+    payload = {"model": mdl, "messages": messages}
+    req = urllib.request.Request(
+        f"{FRONTIER_BASE_URL}/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {FRONTIER_API_KEY}",
+                 "HTTP-Referer": "https://github.com/mafouda909-max/THE-AGENT",
+                 "X-Title": "THE WAY OUT Agent"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8", errors="ignore")[:300]
+        except Exception:
+            detail = ""
+        hints = {401: "المفتاح غلط أو منتهي — راجع FRONTIER_API_KEY.",
+                 402: "رصيد غير كافٍ — استخدم موديلاً مجانياً (...:free).",
+                 404: f"الموديل `{mdl}` غير موجود على المزود.",
+                 429: "تجاوزت الحد المجاني — انتظر دقيقة وحاول."}
+        return False, f"خطأ {e.code}: {hints.get(e.code, detail or e.reason)}"
+    except Exception as e:  # noqa: BLE001
+        return False, f"فشل الاتصال بالمزود: {e}"
+    choices = data.get("choices", [])
+    if not choices:
+        return False, f"رد فارغ من المزود: {str(data)[:300]}"
+    content = (choices[0].get("message", {}).get("content", "") or "").strip()
+    if not content:
+        return False, "المزود رجع إجابة فارغة."
+    return True, content
 
 
 # ===========================================================================
@@ -1037,28 +1103,57 @@ if __name__ == "__main__":
             return f"❌ فشل إنشاء الأتمتة: {e}"
 
     @staticmethod
+    @staticmethod
+    def _parse_schedule(spec: str) -> tuple[str | None, str]:
+        """يحلّل HH:MM أو cron خماسياً. يرجع (cron خماسي, HH:MM) أو (None, '')."""
+        spec = (spec or "").strip()
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", spec)
+        if m:
+            h, mi = int(m.group(1)), int(m.group(2))
+            if 0 <= h <= 23 and 0 <= mi <= 59:
+                return f"{mi} {h} * * *", f"{h:02d}:{mi:02d}"
+            return None, ""
+        parts = spec.split()
+        if len(parts) == 5 and all(re.fullmatch(r"[\d\*/,\-]+", p) for p in parts):
+            hh_mm = "09:00"
+            if parts[0].isdigit() and parts[1].isdigit():
+                hh_mm = f"{int(parts[1]) % 24:02d}:{int(parts[0]) % 60:02d}"
+            return spec, hh_mm
+        return None, ""
+
+    @staticmethod
     def schedule_task(cron: str = "0 9 * * *", command: str = "") -> str:
-        """جدولة مهمة: على Windows عبر schtasks (يومياً)، وعلى غيره يُحفظ + تعليمات."""
+        """جدولة حقيقية: Windows عبر schtasks، وLinux/macOS عبر crontab (مع نسخة احتياطية). يقبل HH:MM أو cron."""
         command = (command or "").strip()
         if not command:
             return "❌ حدد الأمر (command) المراد جدولته."
         if Tools._is_blocked(command):
             return "⛔ الأمر يحتوي نمطاً تدميرياً — مرفوض (أمان)."
-        # استخراج الوقت: يدعم "HH:MM" أو cron "M H * * *"
-        hh_mm = None
-        m = re.search(r"(\d{1,2}):(\d{2})", cron or "")
-        if m:
-            hh_mm = f"{int(m.group(1)):02d}:{m.group(2)}"
-        else:
-            parts = (cron or "").split()
-            if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
-                hh_mm = f"{int(parts[1]):02d}:{int(parts[0]):02d}"
-        hh_mm = hh_mm or "09:00"
+
+        fields, hh_mm = Tools._parse_schedule(cron or "")
+        if fields is None:
+            return ("❌ صيغة الوقت غير مفهومة — أمثلة صحيحة:\n"
+                    '- "09:30" (يومياً الساعة 9:30 صباحاً)\n'
+                    '- "0 9 * * *" (نفس الشيء بصيغة cron)\n'
+                    '- "*/15 * * * *" (كل 15 دقيقة)')
+        if fields == "* * * * *":
+            return "⛔ الجدولة كل دقيقة مرفوضة (خطر إغراق النظام) — استخدم كل 5 دقائق على الأقل: `*/5 * * * *`."
+
+        if os.getenv("SCHEDULE_DRY_RUN", "") == "1":
+            line = f"{fields} {command}  # THE WAY OUT (dry-run)"
+            try:
+                with open("scheduled_tasks.txt", "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+                return (f"📝 وضع تجريبي (SCHEDULE_DRY_RUN=1) — لم يُثبَّت شيء.\n"
+                        f"السطر الذي كان سيُثبَّت:\n{line}\nحُفظ في `scheduled_tasks.txt`.")
+            except Exception as e:  # noqa: BLE001
+                return f"❌ فشل الحفظ: {e}"
+
         if platform.system() == "Windows":
             task = "Wayout_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             try:
                 res = subprocess.run(["schtasks", "/Create", "/SC", "DAILY", "/TN", task,
-                                      "/TR", f'cmd /c {command}', "/ST", hh_mm, "/F"],
+                                      "/TR", f"cmd /c {command}", "/ST", hh_mm, "/F"],
                                      capture_output=True, text=True, timeout=30)
                 if res.returncode != 0:
                     return f"❌ فشل إنشاء المهمة المجدولة:\n{(res.stderr or res.stdout)[:800]}"
@@ -1067,56 +1162,143 @@ if __name__ == "__main__":
                 return "❌ أداة schtasks غير متاحة على هذا النظام."
             except Exception as e:  # noqa: BLE001
                 return f"❌ فشل الجدولة: {e}"
-        # Linux/macOS: حفظ + تعليمات (تعديل crontab تلقائياً خطر — نتركها للمستخدم)
-        line = f"# THE WAY OUT: {cron} {command}  (أضفها بـ: crontab -e)"
+
+        # Linux / macOS: تثبيت حقيقي في crontab مع نسخة احتياطية
         try:
-            with open("scheduled_tasks.txt", "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-            return (f"📝 حُفظت المهمة في `scheduled_tasks.txt`:\n{line}\n"
-                    f"💡 فعّلها بنفسك عبر: crontab -e")
+            cur = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=10)
+            existing = cur.stdout if cur.returncode == 0 else ""
+        except FileNotFoundError:
+            return "❌ أداة crontab غير متاحة على هذا النظام."
         except Exception as e:  # noqa: BLE001
-            return f"❌ فشل الحفظ: {e}"
+            return f"❌ فشل قراءة crontab: {e}"
+        if command in existing and "THE WAY OUT" in existing:
+            return "ℹ️ نفس الأمر مجدول مسبقاً — لم تتم الإضافة مجدداً."
+        new_tab = (existing.rstrip() + "\n" if existing.strip() else "") + f"{fields} {command}  # THE WAY OUT\n"
+        try:
+            Path("crontab.backup.txt").write_text(existing, encoding="utf-8")
+            res = subprocess.run(["crontab", "-"], input=new_tab,
+                                 capture_output=True, text=True, timeout=10)
+            if res.returncode != 0:
+                return f"❌ فشل تثبيت crontab:\n{(res.stderr or res.stdout)[:500]}"
+            extra = ""
+            if platform.system() == "Darwin":
+                extra = "\n💡 على macOS قد تحتاج منح cron صلاحية Full Disk Access من إعدادات النظام."
+            return (f"✅ تمت جدولة الأمر في crontab: `{fields} {command}`\n"
+                    f"📦 نسخة احتياطية من crontab القديم في `crontab.backup.txt`." + extra)
+        except Exception as e:  # noqa: BLE001
+            return f"❌ فشل تثبيت crontab: {e}"
 
     # .......................... 🤖 Advanced AI ............................
     @staticmethod
-    def use_frontier_model(query: str, model: str = "gpt-5") -> str:
-        """استخدام موديل قوي — محلياً يُجاب بالموديل المحلي مع تنبيه واضح."""
-        ans = Tools._ask_brain(query)
-        if ans.startswith("❌"):
-            return ans
-        return (f"ℹ️ الموديل `{model}` يحتاج API key مدفوعاً وغير متاح محلياً — "
-                f"أجبت بالموديل المحلي `{get_brain().model}`:\n\n{ans}")
+    def use_frontier_model(query: str, model: str = "") -> str:
+        """سؤال موديل قوي: frontier مُعد → إجابة حقيقية، وإلا محلي + شرح الإعداد المجاني."""
+        query = (query or "").strip()
+        if not query:
+            return "❌ حدد السؤال."
+        if not frontier_configured():
+            local = Tools._ask_brain(query)
+            return ("ℹ️ لا يوجد مفتاح Frontier مضبوط — أجبت بالموديل المحلي "
+                    f"`{get_brain().model}`:\n\n{local}\n\n{FRONTIER_SETUP_HELP}")
+        mdl = (model or "").strip() or FRONTIER_MODEL
+        ok, ans = frontier_chat([{"role": "user", "content": query}], model=mdl)
+        if not ok:
+            return f"❌ فشل طلب الـ Frontier ({mdl}): {ans}"
+        return f"🌐 إجابة `{mdl}`:\n\n{ans}"
+
+    @staticmethod
+    def _run_side(query: str, name: str, installed: list) -> tuple[str, str | None, float, str]:
+        """يشغّل طرفاً واحداً من المقارنة. يرجع (label, answer|None, seconds, err).
+
+        التوجيه: `local:MODEL` للمحلي / `frontier:MODEL` للسحابي /
+        تلقائي: المثبت محلياً → محلي، اسم فيه `/` → سحابي.
+        """
+        name = (name or "").strip()
+        force = None
+        if name.startswith("local:"):
+            force, name = "local", name[6:].strip()
+        elif name.startswith("frontier:"):
+            force, name = "frontier", name[9:].strip()
+
+        def do_frontier(mdl: str) -> tuple[str, str | None, float, str]:
+            if not frontier_configured():
+                return mdl or "frontier", None, 0.0, "لا يوجد مفتاح Frontier مضبوط."
+            mdl = mdl or FRONTIER_MODEL
+            if not mdl:
+                return "frontier", None, 0.0, "FRONTIER_MODEL غير مضبوط في .env."
+            t0 = time.time()
+            ok, ans = frontier_chat([{"role": "user", "content": query}], model=mdl)
+            dt = time.time() - t0
+            if not ok:
+                return mdl, None, dt, ans
+            return f"frontier:{mdl}", ans, dt, ""
+
+        def do_local(mdl: str) -> tuple[str, str | None, float, str]:
+            mdl = mdl or OLLAMA_MODEL
+            if installed and not any(mdl in m for m in installed):
+                return mdl, None, 0.0, f"غير مثبت في Ollama (المثبت: {', '.join(installed)})."
+            t0 = time.time()
+            ans = AgentBrain(model=mdl).chat_simple(query)
+            dt = time.time() - t0
+            if ans is None:
+                return mdl, None, dt, "تعذّر الاتصال بـ Ollama."
+            return f"local:{mdl}", ans, dt, ""
+
+        if force == "frontier":
+            return do_frontier(name)
+        if force == "local":
+            return do_local(name)
+        if name and any(name in m for m in installed):
+            return do_local(name)
+        if "/" in name:
+            return do_frontier(name)
+        return name, None, 0.0, (f"`{name}` غير مثبت محلياً — ثبّته (ollama pull {name}) "
+                                 "أو استخدم frontier:MODEL لمقارنة سحابية.")
 
     @staticmethod
     def battle_models(query: str, model_a: str = "", model_b: str = "") -> str:
-        """مقارنة موديلين من المثبتين في Ollama على نفس السؤال."""
-        model_a = (model_a or OLLAMA_MODEL).strip()
-        model_b = (model_b or "").strip()
-        brain = get_brain()
-        installed = brain.list_models()
-        if not installed:
-            return "❌ تعذّر الاتصال بـ Ollama — لا يمكن المقارنة."
-        if not model_b:
-            others = [m for m in installed if model_a not in m]
-            if not others:
-                return (f"ℹ️ لا يوجد سوى الموديل `{model_a}` مثبّتاً — ثبّت موديلاً آخر "
-                        f"للمقارنة (مثال: ollama pull qwen2.5-coder:7b).")
-            model_b = others[0]
-        out = [f"⚔️ مقارنة الموديلين على: {query[:120]}"]
-        answers = {}
-        for m in (model_a, model_b):
-            b = AgentBrain(model=m)
-            t0 = time.time()
-            ans = b.chat_simple(query)
-            dt = time.time() - t0
-            if ans is None:
-                out.append(f"\n--- {m}: ❌ غير متاح ({', '.join(installed)})")
+        """مقارنة موديلين (محلي/سحابي) على سؤال + تحكيم تلقائي."""
+        query = (query or "").strip()
+        if not query:
+            return "❌ حدد السؤال."
+        installed = get_brain().list_models()
+        model_a = (model_a or "").strip() or OLLAMA_MODEL
+        if not (model_b or "").strip():
+            if frontier_configured():
+                model_b = "frontier:"  # الموديل السحابي الافتراضي المضبوط
             else:
-                answers[m] = ans
-                out.append(f"\n--- {m} ({dt:.1f}s):\n{ans[:1200]}")
-        if len(answers) == 2:
-            out.append("\n📊 ملاحظة: قارن الإجابتين أعلاه — الأطول ليس بالضرورة الأدق. "
-                       "اطلب مني التحكيم لو حبيت.")
+                plain_a = model_a.replace("local:", "")
+                others = [m for m in installed if plain_a not in m]
+                if not others:
+                    return ("ℹ️ لا يوجد طرف ثانٍ للمقارنة — ثبّت موديلاً ثانياً "
+                            "(مثال: ollama pull qwen2.5-coder:7b) أو اضبط مفتاح Frontier مجانياً.\n\n"
+                            + FRONTIER_SETUP_HELP)
+                model_b = others[0]
+        out = [f"⚔️ مقارنة على: {query[:120]}"]
+        results = []
+        for side in (model_a, model_b):
+            label, ans, dt, err = Tools._run_side(query, side, installed)
+            if ans is None:
+                out.append(f"\n--- {label}: ❌ {err}")
+            else:
+                results.append((label, ans))
+                out.append(f"\n--- {label} ({dt:.1f}s):\n{ans[:1200]}")
+        if len(results) == 2:
+            (la, aa), (lb, ab) = results
+            judge_prompt = (f"سؤال: {query[:300]}\n\nإجابة A ({la}):\n{aa[:1500]}\n\n"
+                            f"إجابة B ({lb}):\n{ab[:1500]}\n\n"
+                            "قارن باختصار: الدقة، الاكتمال، الوضوح — ثم أعلن الفائز "
+                            "(A أو B أو تعادل) في سطر أخير واضح. رد بالعربي.")
+            verdict, by = None, ""
+            if frontier_configured():
+                ok, v = frontier_chat([{"role": "user", "content": judge_prompt}], timeout=120)
+                if ok:
+                    verdict, by = v, FRONTIER_MODEL
+            if verdict is None:
+                v = get_brain().chat_simple(judge_prompt)
+                if v:
+                    verdict, by = v, get_brain().model
+            if verdict:
+                out.append(f"\n⚖️ التحكيم (بواسطة {by}):\n{verdict[:1200]}")
         return "\n".join(out)
 
     @staticmethod
@@ -1264,12 +1446,12 @@ TOOLS_SCHEMA = {
     # 📊
     "create_automation": _TOOL("create_automation", "إنشاء أتمتة (trigger+action).",
                                {"trigger": {"type": "string"}, "action": {"type": "string"}}, ("action",)),
-    "schedule_task": _TOOL("schedule_task", "جدولة مهمة (cron/وقت + أمر).",
+    "schedule_task": _TOOL("schedule_task", "جدولة حقيقية (schtasks/crontab) — يقبل HH:MM أو cron.",
                            {"cron": {"type": "string"}, "command": {"type": "string"}}, ("command",)),
     # 🤖
-    "use_frontier_model": _TOOL("use_frontier_model", "سؤال موديل قوي (يُجاب محلياً مع تنبيه).",
+    "use_frontier_model": _TOOL("use_frontier_model", "سؤال موديل قوي (يحتاج FRONTIER_API_KEY مجاني وإلا يُجاب محلياً).",
                                 {"query": {"type": "string"}, "model": {"type": "string"}}, ("query",)),
-    "battle_models": _TOOL("battle_models", "مقارنة موديلين محليين على سؤال.",
+    "battle_models": _TOOL("battle_models", "مقارنة موديلين (local:/frontier:) مع تحكيم تلقائي.",
                            {"query": {"type": "string"}, "model_a": {"type": "string"},
                             "model_b": {"type": "string"}}, ("query",)),
     "run_agent_team": _TOOL("run_agent_team", "فريق وكلاء: مخطط→منفّذ→مراجع.",
@@ -1528,6 +1710,13 @@ def self_check() -> int:
             r5 = Tools.call_api(f"http://127.0.0.1:{free_port}/")
             report("call_api (محلي)", "HTTP 200" in r5, r5[:80])
             report("stop_project", "تم إيقاف" in Tools.stop_project("t1"))
+            # الجدولة (وضع تجريبي آمن — لا يمس النظام)
+            os.environ["SCHEDULE_DRY_RUN"] = "1"
+            r_dry = Tools.schedule_task("09:30", "echo sched-test")
+            report("schedule_task (تجريبي)", "30 9 * * *" in r_dry and Path("scheduled_tasks.txt").exists(), r_dry[:100])
+            report("schedule_task (رفض صيغة غلط)", "غير مفهومة" in Tools.schedule_task("كلام فاضي", "echo x"))
+            report("schedule_task (رفض كل دقيقة)", "مرفوضة" in Tools.schedule_task("* * * * *", "echo x"))
+            del os.environ["SCHEDULE_DRY_RUN"]
         finally:
             try:
                 Tools.stop_project("t1")
@@ -1545,6 +1734,8 @@ def self_check() -> int:
     brain = AgentBrain()
     ok, detail = brain.check_connection()
     report("Ollama connection (اختياري)", True if ok else None, detail[:120])
+    report("frontier (اختياري)", True if frontier_configured() else None,
+           f"الموديل: {FRONTIER_MODEL}" if frontier_configured() else "اضبط FRONTIER_API_KEY في .env للإجابات الأقوى")
 
     print(f"\n{Fore.CYAN}الأدوات المتاحة: {len(TOOLS_SCHEMA)} (full) / {len(TOOLSET_CORE)} (core){Style.RESET_ALL}")
     print(f"{Fore.CYAN}النتيجة: {passed} ناجح ✅ | {failed} فاشل ❌ | {skipped} متخطى ⏭️{Style.RESET_ALL}")
@@ -1556,7 +1747,7 @@ def self_check() -> int:
 # ===========================================================================
 BANNER = """
 ╔══════════════════════════════════════════════════════════╗
-║     🚀  T H E   W A Y   O U T   A G E N T  v2.0         ║
+║     🚀  T H E   W A Y   O U T   A G E N T  v2.1         ║
 ║   There's always a way out — دايماً في طريق للخروج     ║
 ╚══════════════════════════════════════════════════════════╝
 """

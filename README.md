@@ -74,7 +74,7 @@ python agent.py --version        # رقم النسخة
 | 🔧 أكواد | `analyze_code` `review_code` `explain_code` `find_bugs` `generate_tests` `refactor_code` |
 | 🎨 محتوى | `generate_readme` `generate_documentation` `generate_content` |
 | 📊 أتمتة | `create_automation` `schedule_task` |
-| 🤖 متقدم | `use_frontier_model` `battle_models` `run_agent_team` |
+| 🤖 متقدم | `use_frontier_model` (حقيقي بمفتاح مجاني) `battle_models` (محلي/سحابي + تحكيم) `run_agent_team` |
 
 > الأسماء القديمة (`list_files` `read_website` `check_port` `launch_the_way_out` `stop_server`) ما زالت تعمل للتوافق.
 > تقرير المطابقة الكامل: [`docs/MASTER_PROMPT_COMPLIANCE.md`](docs/MASTER_PROMPT_COMPLIANCE.md).
@@ -93,9 +93,43 @@ copy .env.example .env
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | عنوان سيرفر Ollama |
 | `OLLAMA_MODEL` | `qwen2.5-coder:1.5b` | اسم الموديل |
-| `AGENT_MAX_STEPS` | `5` | أقصى عدد خطوات تفكير لكل أمر |
+| `OLLAMA_NUM_CTX` | `8192` | حجم السياق (لاستيعاب البرومبت + 39 أداة) |
+| `AGENT_MAX_STEPS` | `8` | أقصى عدد خطوات تفكير لكل أمر |
 | `AGENT_TIMEOUT` | `60` | مهلة تنفيذ أوامر التيرمينال (ثانية) |
+| `AGENT_TOOLSET` | `full` | مجموعة الأدوات: `full` أو `core` (خفيف) |
 | `DEFAULT_PORT` | `5000` | منفذ مشروع THE WAY OUT |
+| `MEMORY_FILE` | `memory.json` | ملف الذاكرة الدائمة |
+| `FRONTIER_API_KEY` | (فارغ) | مفتاح Frontier المجاني — يفعّل الموديلات القوية |
+| `FRONTIER_BASE_URL` | `https://openrouter.ai/api/v1` | مزود Frontier (متوافق مع OpenAI) |
+| `FRONTIER_MODEL` | `qwen/...:free` | الموديل السحابي الافتراضي |
+
+---
+
+## 🌐 الموديلات القوية المجانية (اختياري — يُفعّل `use_frontier_model` و `battle_models`)
+
+بدون إعداد: الأداتان تجاوبان بالموديل المحلي مع تنبيه. للتفعيل الحقيقي المجاني (دقيقتين):
+
+**OpenRouter (الأسهل):**
+1. اعمل حساب على `https://openrouter.ai` وانسخ مفتاحاً من صفحة Keys.
+2. في ملف `.env`:
+```
+FRONTIER_API_KEY=sk-or-v1-xxx
+FRONTIER_MODEL=qwen/qwen-2.5-coder-32b-instruct:free
+```
+3. جرّب: `اسأل الموديل القوي عن شرح decorators في بايثون`
+
+**بدائل مجانية:**
+- **Groq** (الأسرع): مفتاح من `console.groq.com` + `FRONTIER_BASE_URL=https://api.groq.com/openai/v1` + `FRONTIER_MODEL=llama-3.3-70b-versatile`
+- **Gemini** (حصة كبيرة): مفتاح من `aistudio.google.com` + `FRONTIER_BASE_URL=https://generativelanguage.googleapis.com/v1beta1/openai` + `FRONTIER_MODEL=gemini-2.0-flash`
+
+**المقارنة:** `قارن بين الموديل المحلي وموديل frontier في شرح الـ closures`
+(ويمكن التحديد الصريح: `local:qwen2.5-coder:1.5b` مقابل `frontier:llama-3.3-70b-versatile` — مع تحكيم تلقائي ⚖️)
+
+## ⏰ الجدولة الحقيقية
+
+- **Windows:** `schedule_task("09:30", "python backup.py")` → مهمة يومية حقيقية عبر `schtasks`.
+- **Linux/macOS:** تثبيت حقيقي في `crontab` مع نسخة احتياطية (`crontab.backup.txt`).
+- **وضع المعاينة الآمن:** `SCHEDULE_DRY_RUN=1` يكتب السطر في `scheduled_tasks.txt` بدون تثبيت.
 
 ---
 
