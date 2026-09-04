@@ -62,17 +62,22 @@ python agent.py --version        # رقم النسخة
 
 ---
 
-## 🛠️ أدوات الإيجنت (Tools)
+## 🛠️ أدوات الإيجنت (39 أداة — مطابق للماستر برومبت v10)
 
-| الأداة | الوصف |
+| المجموعة | الأدوات |
 |---|---|
-| `execute_terminal` | تنفيذ أوامر النظام (مع حظر الأوامر التدميرية) |
-| `write_file` | إنشاء وتعديل الملفات |
-| `read_file` | قراءة الملفات |
-| `list_files` | عرض محتويات مجلد |
-| `launch_the_way_out` | تشغيل سيرفر محلي تجريبي للمشروع |
-| `read_website` | سحب وتلخيص محتوى أي موقع |
-| `check_port` | فحص هل منفذ/خدمة شغالة أم لا |
+| 📁 ملفات | `write_file` `read_file` `edit_file` `list_directory` `delete_file` `search_files` |
+| 💻 نظام | `execute_terminal` `run_python` `install_package` `check_system` |
+| 🚀 مشاريع | `create_project` `launch_project` `stop_project` `check_health` `read_logs` `monitor_project` |
+| 🌐 ويب | `browse_web` `web_search` (بدون API key) `download_file` `call_api` `scrape_data` |
+| 🧠 ذاكرة | `remember` `recall` `list_memories` `forget` (دائمة في `memory.json`) |
+| 🔧 أكواد | `analyze_code` `review_code` `explain_code` `find_bugs` `generate_tests` `refactor_code` |
+| 🎨 محتوى | `generate_readme` `generate_documentation` `generate_content` |
+| 📊 أتمتة | `create_automation` `schedule_task` |
+| 🤖 متقدم | `use_frontier_model` `battle_models` `run_agent_team` |
+
+> الأسماء القديمة (`list_files` `read_website` `check_port` `launch_the_way_out` `stop_server`) ما زالت تعمل للتوافق.
+> تقرير المطابقة الكامل: [`docs/MASTER_PROMPT_COMPLIANCE.md`](docs/MASTER_PROMPT_COMPLIANCE.md).
 
 ---
 
