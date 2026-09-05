@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -88,6 +88,7 @@ SYSTEM_PROMPT = """أنت **THE WAY OUT Agent** — مهندس برمجيات ذ
 - "اعمل ملف" → `write_file` مباشرة. "شغل المشروع" → `launch_project` مباشرة. "افحص الموقع" → `browse_web` مباشرة.
 - استدعِ الأدوات عبر آلية function calling فقط — **ممنوع كتابة JSON كنص في ردك**. النصوص (مثل content) أرسلها خاماً بدون تغليف في كائنات.
 - ⛔ ممنوع الادعاء بتنفيذ مهمة بدون استدعاء الأدوات فعلاً — أي رد نهائي لمهمة تنفيذية بدون أدوات = فشل. نفّذ أولاً ثم بلّغ.
+- 🔁 ممنوع تكرار نفس الرد مرتين — لو ردّك السابق اترفض، غيّر سلوكك فوراً ونفّذ بالأدوات.
 - نفّذ بافتراضات منطقية واذكرها، بدل ما تسأل أسئلة كتير.
 
 ### 2. القراءة قبل الكتابة (Read Before Write)
@@ -125,13 +126,13 @@ SYSTEM_PROMPT = """أنت **THE WAY OUT Agent** — مهندس برمجيات ذ
 5. 📢 بلّغ: تقرير نهائي مختصر بالمصري: ✅ ما تم، 📊 النتائج، 💡 الخطوة الجاية (لو relevant).
 
 ## صيغة الرد:
-- مهام بسيطة: `✅ ما تم` + `📊 النتيجة` + `💡 اقتراح اختياري`.
+- مهام بسيطة: سطر ✅ لما تم، ثم `📊 النتيجة`، ثم `💡 اقتراح اختياري`.
 - مهام معقدة: 📋 الخطة → ⚙️ التنفيذ → 🎯 النتيجة النهائية → 📊 إحصائيات.
 - أخطاء: ❌ الخطأ → 🔍 السبب → 🩹 محاولة الإصلاح → 💡 الحل المقترح.
 - الرد النهائي مختصر (أقل من 300 كلمة إلا لو كود).
 
 ## عباراتك المفضلة:
-"خلاص كده اتعمل ✅" ، "يلا نجرب الحل ده 💡" ، "المشروع شغال تمام 🚀" ، "في مشكلة صغيرة، هصلحها 🔧" ، "عايز أضيف حاجة تانية؟"
+"خلاص كده اتعمل ✅" ، "يلا نجرب الحل ده 💡" ، "كله تمام والشغل خلص 🚀" ، "في مشكلة صغيرة، هصلحها 🔧" ، "عايز أضيف حاجة تانية؟"
 
 تذكّر: There's ALWAYS a way out. نفّذ، تحقق، ثم بلّغ. 🚀"""
 
@@ -1643,6 +1644,44 @@ def _auto_summary(history: list, tools_used: int, dt: float, reason: str) -> str
     return "\n".join(lines)
 
 
+_INTENT_LAUNCH = ["شغّل مشروع", "شغل مشروع", "شغّلي المشروع", "شغل السيرفر",
+                 "شغّل السيرفر", "launch project", "start project", "run project",
+                 "start server", "launch server"]
+_INTENT_PORT = ["افحص المنفذ", "افحص منفذ", "افحص البورت", "check port", "test port"]
+_INTENT_FILES = ["اعرض الملفات", "محتويات المجلد", "قائمة الملفات", "list files",
+                 "show files", "اعرض محتويات"]
+
+
+def _match_intent(query: str):
+    """يطابق نية آمنة واضحة. يرجع (اسم_الأداة, kwargs) أو None. (دالة خالصة — بدون تنفيذ)"""
+    q = (query or "").strip().lower()
+    if not q:
+        return None
+    if any(k in q for k in _INTENT_LAUNCH):
+        m = re.search(r"(\d{2,5})", q)
+        return ("launch_project", {"port": int(m.group(1)) if m else 5000})
+    if any(k in q for k in _INTENT_PORT):
+        m = re.search(r"(\d{2,5})", q)
+        if m:
+            return ("check_health", {"port": int(m.group(1))})
+        return None
+    if any(k in q for k in _INTENT_FILES):
+        return ("list_directory", {})
+    return None
+
+
+def _route_intent(query: str):
+    """الملاذ الأخير: ينفذ نية آمنة واضحة مباشرة. يرجع (الاسم, النتيجة) أو (None, '')."""
+    m = _match_intent(query)
+    if not m:
+        return None, ""
+    name, kwargs = m
+    try:
+        return name, str(getattr(Tools, name)(**kwargs))
+    except Exception as e:  # noqa: BLE001
+        return name, f"❌ فشل التوجيه المباشر: {e}"
+
+
 _ACTION_MARKERS_AR = ["اعمل", "اكتب", "أنشئ", "انشئ", "شغّل", "شغل", "افحص", "افتح",
                       "اقرأ", "اقرا", "ابحث", "دور على", "دوّر", "ثبّت", "ثبت",
                       "احفظ", "سجّل", "احذف", "امسح", "عدّل", "عدل", "غيّر",
@@ -1719,19 +1758,41 @@ def run_agent(user_query: str, brain: AgentBrain,
             if content.strip().startswith("❌ خطأ في الاتصال"):
                 print(f"\n{Fore.RED}{content}{Style.RESET_ALL}\n")
                 return content
-            # No-action guard: ارفض الادعاء بدون تنفيذ للمهام التنفيذية (محاولتان)
-            if tools_used == 0 and nudges_used < 2 and _looks_like_action(user_query):
-                nudges_used += 1
-                last_text = ""
-                print(f"{Fore.YELLOW}⚠️ (رد بدون تنفيذ — أطالبه بالتنفيذ الحقيقي... محاولة {nudges_used}/2){Style.RESET_ALL}")
-                messages.append(msg)
-                messages.append({"role": "user", "content": (
-                    "⛔ لم تستخدم أي أداة! المطلوب مهمة تنفيذية — ممنوع الادعاء بأن شيئاً تم بدون تنفيذه فعلاً. "
-                    "نفّذ الآن باستدعاء الأداة المناسبة "
-                    "(تشغيل مشروع → launch_project | كتابة ملف → write_file | قراءة → read_file | "
-                    "فحص منفذ → check_health | بحث ويب → web_search | تنفيذ أمر → execute_terminal). "
-                    "ممنوع كتابة التقرير النهائي قبل التنفيذ والتحقق.")})
-                continue
+            # No-action guard: ارفض الادعاء بدون تنفيذ للمهام التنفيذية (محاولتان ثم توجيه حتمي)
+            if tools_used == 0 and _looks_like_action(user_query):
+                if nudges_used < 2:
+                    nudges_used += 1
+                    last_text = ""
+                    print(f"{Fore.YELLOW}⚠️ (رد بدون تنفيذ — أطالبه بالتنفيذ الحقيقي... محاولة {nudges_used}/2){Style.RESET_ALL}")
+                    if nudges_used == 1:
+                        nudge_text = (
+                            "⛔ لم تستخدم أي أداة! المطلوب مهمة تنفيذية — ممنوع الادعاء بأن شيئاً تم بدون تنفيذه فعلاً. "
+                            "نفّذ الآن باستدعاء الأداة المناسبة "
+                            "(تشغيل مشروع → launch_project | كتابة ملف → write_file | قراءة → read_file | "
+                            "فحص منفذ → check_health | بحث ويب → web_search | تنفيذ أمر → execute_terminal). "
+                            "ممنوع كتابة التقرير النهائي قبل التنفيذ والتحقق.")
+                    else:
+                        nudge_text = ("FINAL WARNING (read carefully, in English): You MUST call a tool NOW. "
+                            "Do NOT write Arabic text. Do NOT repeat your previous answer. "
+                            "Launching/running → call launch_project. Writing → write_file. "
+                            "CALL THE TOOL IN THIS RESPONSE, no excuses.")
+                    messages.append(msg)
+                    messages.append({"role": "user", "content": nudge_text})
+                    continue
+                # المحاولات خلصت — الملاذ الأخير: التوجيه الحتمي المباشر
+                rname, rres = _route_intent(user_query)
+                if rname:
+                    tools_used += 1
+                    history.append((rname, {}, not _looks_failed(rres), str(rres)[:150]))
+                    print(f"{Fore.CYAN}🤖 (الموديل رفض التنفيذ مرتين — نفّذت الأمر مباشرة: {rname}){Style.RESET_ALL}")
+                    print(f"{Fore.MAGENTA}   ↳ الناتج: {str(rres)[:250]}{Style.RESET_ALL}")
+                    final = f"🤖 نفّذت طلبك مباشرة (الموديل الصغير رفض التعاون):\n{rres}"
+                    print(f"\n{Fore.GREEN}🎯 النتيجة:\n{final}{Style.RESET_ALL}")
+                    dt = time.time() - t0
+                    print(f"{Fore.CYAN}📊 (الأدوات المستخدمة: {tools_used} | الوقت: {dt:.1f}s){Style.RESET_ALL}\n")
+                    return f"{final}\n📊 (الأدوات المستخدمة: {tools_used} | الوقت: {dt:.1f}s)"
+                print(f"{Fore.RED}❌ الموديل رفض التنفيذ بعد محاولتين، والطلب غير قابل للتوجيه المباشر.{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}💡 جرّب: إعادة صياغة الأمر، أو الوضع الخفيف (--toolset core)، أو مفتاح Frontier مجاني.{Style.RESET_ALL}")
             print(f"\n{Fore.GREEN}🎯 النتيجة:\n{content or '(لا يوجد رد نصي)'}{Style.RESET_ALL}")
             break
 
@@ -1906,6 +1967,10 @@ def self_check() -> int:
     report("no-action detector (سؤال)", _looks_like_action("ازاي أشغل المشروع؟") is False)
     report("no-action detector (تحية)", _looks_like_action("سلام عليكم") is False)
 
+    report("intent router (تشغيل)", _match_intent("شغّل مشروع THE WAY OUT") == ("launch_project", {"port": 5000}))
+    report("intent router (منفذ)", _match_intent("افحص المنفذ 5000") == ("check_health", {"port": 5000}))
+    report("intent router (مرفوض)", _match_intent("اكتب قصيدة عن البحر") is None)
+
     # التقارير النهائية
     brain = AgentBrain()
     ok, detail = brain.check_connection()
@@ -1923,7 +1988,7 @@ def self_check() -> int:
 # ===========================================================================
 BANNER = """
 ╔══════════════════════════════════════════════════════════╗
-║     🚀  T H E   W A Y   O U T   A G E N T  v2.4         ║
+║     🚀  T H E   W A Y   O U T   A G E N T  v2.5         ║
 ║   There's always a way out — دايماً في طريق للخروج     ║
 ╚══════════════════════════════════════════════════════════╝
 """

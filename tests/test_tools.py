@@ -383,3 +383,29 @@ def test_action_detector_false(q):
     from agent import _looks_like_action
 
     assert _looks_like_action(q) is False
+
+
+def test_match_intent_launch():
+    from agent import _match_intent
+
+    assert _match_intent("شغّل مشروع THE WAY OUT") == ("launch_project", {"port": 5000})
+    assert _match_intent("شغل السيرفر على 8080") == ("launch_project", {"port": 8080})
+
+
+def test_match_intent_port():
+    from agent import _match_intent
+
+    assert _match_intent("افحص المنفذ 5000") == ("check_health", {"port": 5000})
+
+
+def test_match_intent_files():
+    from agent import _match_intent
+
+    assert _match_intent("اعرض الملفات") == ("list_directory", {})
+
+
+def test_match_intent_none():
+    from agent import _match_intent
+
+    assert _match_intent("اكتب قصيدة عن البحر") is None
+    assert _match_intent("سلام عليكم") is None
