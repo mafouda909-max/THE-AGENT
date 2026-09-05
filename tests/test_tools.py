@@ -367,3 +367,19 @@ def test_auto_summary_empty():
     from agent import _auto_summary
 
     assert "لم تُنفَّذ" in _auto_summary([], 0, 0.5, "steps")
+
+
+@pytest.mark.parametrize("q", ["شغّل المشروع", "اكتب ملف x", "launch the server",
+                               "ابحث عن بايثون", "افحص المنفذ 5000"])
+def test_action_detector_true(q):
+    from agent import _looks_like_action
+
+    assert _looks_like_action(q) is True
+
+
+@pytest.mark.parametrize("q", ["سلام عليكم", "شكرا", "ازاي أشغل المشروع؟",
+                               "What is Python?", "تمام"])
+def test_action_detector_false(q):
+    from agent import _looks_like_action
+
+    assert _looks_like_action(q) is False

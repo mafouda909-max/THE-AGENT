@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -87,6 +87,7 @@ SYSTEM_PROMPT = """أنت **THE WAY OUT Agent** — مهندس برمجيات ذ
 - **ما تقولش "هعمل"** — نفّذ فوراً باستخدام الـ tools المتاحة.
 - "اعمل ملف" → `write_file` مباشرة. "شغل المشروع" → `launch_project` مباشرة. "افحص الموقع" → `browse_web` مباشرة.
 - استدعِ الأدوات عبر آلية function calling فقط — **ممنوع كتابة JSON كنص في ردك**. النصوص (مثل content) أرسلها خاماً بدون تغليف في كائنات.
+- ⛔ ممنوع الادعاء بتنفيذ مهمة بدون استدعاء الأدوات فعلاً — أي رد نهائي لمهمة تنفيذية بدون أدوات = فشل. نفّذ أولاً ثم بلّغ.
 - نفّذ بافتراضات منطقية واذكرها، بدل ما تسأل أسئلة كتير.
 
 ### 2. القراءة قبل الكتابة (Read Before Write)
@@ -1642,6 +1643,39 @@ def _auto_summary(history: list, tools_used: int, dt: float, reason: str) -> str
     return "\n".join(lines)
 
 
+_ACTION_MARKERS_AR = ["اعمل", "اكتب", "أنشئ", "انشئ", "شغّل", "شغل", "افحص", "افتح",
+                      "اقرأ", "اقرا", "ابحث", "دور على", "دوّر", "ثبّت", "ثبت",
+                      "احفظ", "سجّل", "احذف", "امسح", "عدّل", "عدل", "غيّر",
+                      "صلّح", "اصلح", "أصلح", "نفّذ", "نفذ", "نزّل", "نزل",
+                      "حمّل", "حمل", "راجع", "حلّل", "اشرح", "قارن", "لخّص",
+                      "لخص", "جدول", "أتمت", "اتمت", "راقب", "أوقف", "وقف",
+                      "ابني", "استخرج", "اسحب", "ضيف", "أضف", "ترجم", "اختصر"]
+_ACTION_MARKERS_EN = ["make", "create", "write", "run", "launch", "start", "check",
+                      "read", "search", "install", "save", "delete", "remove", "edit",
+                      "update", "fix", "execute", "download", "review", "analy",
+                      "explain", "compare", "summar", "schedule", "automate",
+                      "monitor", "stop", "build", "generate", "fetch", "open"]
+_QUESTION_MARKERS = ["؟", "?", "ازاي", "ازاى", "ليه", "لماذا", "ايه", "إيه",
+                     "ماهو", "ما هو", "مين", "امتى", "متى", "فين",
+                     "أين", "يعني ايه", "what", "how", "why", "when",
+                     "where", "who", "which"]
+
+
+def _looks_like_action(query: str) -> bool:
+    """هل الطلب مهمة تنفيذية (تحتاج أدوات) أم سؤال/دردشة؟"""
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    padded = f" {q} "
+    is_question = (" هل " in padded or any(m in q for m in _QUESTION_MARKERS))
+    if any(m in q for m in _ACTION_MARKERS_AR):
+        return not is_question
+    for w in _ACTION_MARKERS_EN:
+        if re.search(r"\b" + re.escape(w) + r"\w*\b", q):
+            return not is_question
+    return False
+
+
 def _looks_failed(result: str) -> bool:
     return result.startswith(("❌", "⛔", "⚠️"))
 
@@ -1663,6 +1697,7 @@ def run_agent(user_query: str, brain: AgentBrain,
     success_key = ""
     success_streak = 0
     history: list = []
+    nudges_used = 0
 
     for step in range(1, max_steps + 1):
         msg = brain.query(messages, tools_schema)
@@ -1684,6 +1719,19 @@ def run_agent(user_query: str, brain: AgentBrain,
             if content.strip().startswith("❌ خطأ في الاتصال"):
                 print(f"\n{Fore.RED}{content}{Style.RESET_ALL}\n")
                 return content
+            # No-action guard: ارفض الادعاء بدون تنفيذ للمهام التنفيذية (محاولتان)
+            if tools_used == 0 and nudges_used < 2 and _looks_like_action(user_query):
+                nudges_used += 1
+                last_text = ""
+                print(f"{Fore.YELLOW}⚠️ (رد بدون تنفيذ — أطالبه بالتنفيذ الحقيقي... محاولة {nudges_used}/2){Style.RESET_ALL}")
+                messages.append(msg)
+                messages.append({"role": "user", "content": (
+                    "⛔ لم تستخدم أي أداة! المطلوب مهمة تنفيذية — ممنوع الادعاء بأن شيئاً تم بدون تنفيذه فعلاً. "
+                    "نفّذ الآن باستدعاء الأداة المناسبة "
+                    "(تشغيل مشروع → launch_project | كتابة ملف → write_file | قراءة → read_file | "
+                    "فحص منفذ → check_health | بحث ويب → web_search | تنفيذ أمر → execute_terminal). "
+                    "ممنوع كتابة التقرير النهائي قبل التنفيذ والتحقق.")})
+                continue
             print(f"\n{Fore.GREEN}🎯 النتيجة:\n{content or '(لا يوجد رد نصي)'}{Style.RESET_ALL}")
             break
 
@@ -1854,6 +1902,10 @@ def self_check() -> int:
     s = _auto_summary(demo_hist, 2, 1.5, "loop")
     report("auto-summary (ملخص التكرار)", "write_file(x.txt)" in s and "📊" in s, s[:100])
 
+    report("no-action detector (أمر تنفيذي)", _looks_like_action("شغّل مشروع THE WAY OUT") is True)
+    report("no-action detector (سؤال)", _looks_like_action("ازاي أشغل المشروع؟") is False)
+    report("no-action detector (تحية)", _looks_like_action("سلام عليكم") is False)
+
     # التقارير النهائية
     brain = AgentBrain()
     ok, detail = brain.check_connection()
@@ -1871,7 +1923,7 @@ def self_check() -> int:
 # ===========================================================================
 BANNER = """
 ╔══════════════════════════════════════════════════════════╗
-║     🚀  T H E   W A Y   O U T   A G E N T  v2.3         ║
+║     🚀  T H E   W A Y   O U T   A G E N T  v2.4         ║
 ║   There's always a way out — دايماً في طريق للخروج     ║
 ╚══════════════════════════════════════════════════════════╝
 """
