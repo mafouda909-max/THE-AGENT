@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import difflib
 import json
 import os
 import platform
@@ -37,7 +38,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "2.7.0"
+__version__ = "2.8.0"
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -1373,11 +1374,50 @@ if __name__ == "__main__":
 
 # أسماء بديلة يقبلها الموجّه عند استدعاء الموديل لأداة قديمة
 TOOL_ALIASES = {
-    "list_files": "list_directory",
-    "read_website": "browse_web",
-    "check_port": "check_health",
-    "launch_the_way_out": "launch_project",
+    # أسماء قديمة (v1.x) — للتوافق
+    "list_files": "list_directory", "read_website": "browse_web",
+    "check_port": "check_health", "launch_the_way_out": "launch_project",
     "stop_server": "stop_project",
+    # أخطاء الموديلات الصغيرة الشائعة → الأداة الصحيحة
+    "read_web": "browse_web", "read_url": "browse_web", "fetch_url": "browse_web",
+    "open_url": "browse_web", "get_url": "browse_web", "fetch": "browse_web",
+    "run_command": "execute_terminal", "shell": "execute_terminal",
+    "terminal": "execute_terminal", "cmd": "execute_terminal", "bash": "execute_terminal",
+    "run_file": "run_python", "python": "run_python", "exec_python": "run_python",
+    "write": "write_file", "create_file": "write_file", "save_file": "write_file",
+    "read": "read_file", "open_file": "read_file", "cat": "read_file",
+    "list": "list_directory", "ls": "list_directory", "dir": "list_directory",
+    "delete": "delete_file", "remove_file": "delete_file", "rm": "delete_file",
+    "search": "search_files", "find": "search_files", "grep": "search_files",
+    "find_in_files": "search_files",
+    "health": "check_health", "status": "check_health", "ping": "check_health",
+    "logs": "read_logs", "log": "read_logs", "get_logs": "read_logs",
+    "launch": "launch_project", "start": "launch_project", "serve": "launch_project",
+    "stop": "stop_project", "kill": "stop_project",
+    "monitor": "monitor_project", "watch": "monitor_project",
+    "project": "create_project", "new_project": "create_project", "scaffold": "create_project",
+    "search_web": "web_search", "google": "web_search", "websearch": "web_search",
+    "search_internet": "web_search",
+    "download": "download_file", "fetch_file": "download_file", "wget": "download_file",
+    "api": "call_api", "http": "call_api", "request": "call_api",
+    "scrape": "scrape_data", "crawl": "scrape_data",
+    "analyze": "analyze_code", "analyse": "analyze_code",
+    "review": "review_code", "explain": "explain_code",
+    "bugs": "find_bugs", "debug": "find_bugs",
+    "test": "generate_tests", "tests": "generate_tests", "unittest": "generate_tests",
+    "refactor": "refactor_code",
+    "readme": "generate_readme", "read_me": "generate_readme",
+    "docs": "generate_documentation", "document": "generate_documentation",
+    "content": "generate_content",
+    "automate": "create_automation", "automation": "create_automation",
+    "schedule": "schedule_task", "cron": "schedule_task",
+    "team": "run_agent_team", "agents": "run_agent_team",
+    "battle": "battle_models", "compare_models": "battle_models",
+    "frontier": "use_frontier_model", "gpt": "use_frontier_model", "Muse": "use_frontier_model",
+    "system": "check_system", "sysinfo": "check_system", "sys_info": "check_system",
+    "install": "install_package", "pip": "install_package", "pip_install": "install_package",
+    "remember_fact": "remember", "memorize": "remember", "save_memory": "remember",
+    "memory": "list_memories", "memories": "list_memories",
 }
 
 TOOLSET_CORE = ["execute_terminal", "write_file", "read_file", "list_directory",
@@ -1624,10 +1664,11 @@ def extract_text_tool_calls(content: str) -> list:
                 args = _parse_tool_args(it.get("parameters", it.get("arguments", {})))
             if not name or not isinstance(name, str):
                 continue
-            name = TOOL_ALIASES.get(name, name)
-            if name not in TOOLS_SCHEMA:
+            resolved, fix_note = resolve_tool_name(name)
+            if not resolved:
                 continue
-            calls.append({"name": name, "arguments": _normalize_tool_args(args)})
+            name = resolved
+            calls.append({"name": name, "arguments": _normalize_tool_args(args), "note": fix_note})
             if len(calls) >= 3:
                 return calls
     return calls
@@ -1728,6 +1769,21 @@ def _looks_like_action(query: str) -> bool:
     return False
 
 
+def resolve_tool_name(name: str) -> tuple[str | None, str]:
+    """يحل اسم أداة (صحيح/بديل/مقارب إملائياً). يرجع (الحقيقي, ملاحظة) أو (None, '')."""
+    if not name or not isinstance(name, str):
+        return None, ""
+    name = name.strip()
+    if name in TOOLS_SCHEMA:
+        return name, ""
+    if name in TOOL_ALIASES:
+        return TOOL_ALIASES[name], f"فسّرت `{name}` كـ `{TOOL_ALIASES[name]}`"
+    close = difflib.get_close_matches(name, list(TOOLS_SCHEMA.keys()), n=1, cutoff=0.8)
+    if close:
+        return close[0], f"صححت `{name}` إلى `{close[0]}`"
+    return None, ""
+
+
 def _looks_failed(result: str) -> bool:
     return result.startswith(("❌", "⛔", "⚠️"))
 
@@ -1765,6 +1821,9 @@ def run_agent(user_query: str, brain: AgentBrain,
             rescued = extract_text_tool_calls(content)
             if rescued:
                 print(f"{Fore.CYAN}🔧 (الموديل كتب JSON كنص — التقطت {len(rescued)} استدعاء وأنفّذه){Style.RESET_ALL}")
+                for _c in rescued:
+                    if _c.get("note"):
+                        print(f"{Fore.CYAN}   🔤 {_c['note']}{Style.RESET_ALL}")
                 tool_calls = [{"function": {"name": c["name"], "arguments": c["arguments"]}} for c in rescued]
 
         if not tool_calls:
@@ -1783,12 +1842,12 @@ def run_agent(user_query: str, brain: AgentBrain,
                             "نفّذ الآن باستدعاء الأداة المناسبة "
                             "(تشغيل مشروع → launch_project | كتابة ملف → write_file | قراءة → read_file | "
                             "فحص منفذ → check_health | بحث ويب → web_search | تنفيذ أمر → execute_terminal). "
-                            "ممنوع كتابة التقرير النهائي قبل التنفيذ والتحقق.")
+                            "ممنوع كتابة التقرير النهائي قبل التنفيذ والتحقق. " f"المطلوب الأصلي: {user_query[:200]}")
                     else:
                         nudge_text = ("FINAL WARNING (read carefully, in English): You MUST call a tool NOW. "
                             "Do NOT write Arabic text. Do NOT repeat your previous answer. "
                             "Launching/running → call launch_project. Writing → write_file. "
-                            "CALL THE TOOL IN THIS RESPONSE, no excuses.")
+                            "CALL THE TOOL IN THIS RESPONSE, no excuses. " f"ORIGINAL TASK: {user_query[:200]}")
                     messages.append(msg)
                     messages.append({"role": "user", "content": nudge_text})
                     continue
@@ -1812,7 +1871,11 @@ def run_agent(user_query: str, brain: AgentBrain,
         messages.append(msg)
         for tool in tool_calls:
             fn = tool.get("function", {})
-            fn_name = TOOL_ALIASES.get(fn.get("name", ""), fn.get("name", ""))
+            raw_name = fn.get("name", "")
+            resolved, fix_note = resolve_tool_name(raw_name)
+            fn_name = resolved or raw_name
+            if fix_note:
+                print(f"{Fore.CYAN}   🔤 {fix_note}{Style.RESET_ALL}")
             args = _parse_tool_args(fn.get("arguments", {}))
             print(f"{Fore.BLUE}⚙️ [تنفيذ {step}/{max_steps}]: {fn_name}({args}){Style.RESET_ALL}")
 
@@ -2005,6 +2068,12 @@ def self_check() -> int:
     report("intent router (منفذ)", _match_intent("افحص المنفذ 5000") == ("check_health", {"port": 5000}))
     report("intent router (مرفوض)", _match_intent("اكتب قصيدة عن البحر") is None)
 
+    rslv, _ = resolve_tool_name("read_web")
+    report("tool resolver (اسم بديل)", rslv == "browse_web")
+    rslv2, _ = resolve_tool_name("browse_wbe")
+    report("tool resolver (خطأ إملائي)", rslv2 == "browse_web")
+    report("tool resolver (مرفوض)", resolve_tool_name("nope_xyz_123")[0] is None)
+
     # التقارير النهائية
     brain = AgentBrain()
     ok, detail = brain.check_connection()
@@ -2022,7 +2091,7 @@ def self_check() -> int:
 # ===========================================================================
 BANNER = """
 ╔══════════════════════════════════════════════════════════╗
-║     🚀  T H E   W A Y   O U T   A G E N T  v2.7         ║
+║     🚀  T H E   W A Y   O U T   A G E N T  v2.8         ║
 ║   There's always a way out — دايماً في طريق للخروج     ║
 ╚══════════════════════════════════════════════════════════╝
 """

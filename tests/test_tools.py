@@ -250,9 +250,17 @@ def test_create_automation_blocks_evil():
 # ---------------- Aliases (v1.x compat) ----------------
 
 def test_aliases_resolve():
+    from agent import resolve_tool_name
+
     for alias, canonical in TOOL_ALIASES.items():
-        assert hasattr(Tools, alias), alias
         assert canonical in TOOLS_SCHEMA, canonical
+        assert resolve_tool_name(alias)[0] == canonical, alias
+
+
+def test_legacy_alias_methods_exist():
+    for alias in ("list_files", "read_website", "check_port",
+                  "launch_the_way_out", "stop_server"):
+        assert callable(getattr(Tools, alias, None)), alias
 
 
 def test_legacy_check_port():
@@ -376,6 +384,39 @@ def test_extract_resolves_alias():
 
     calls = extract_text_tool_calls('{"name": "check_port", "arguments": {"port": 80}}')
     assert calls and calls[0]["name"] == "check_health"
+
+
+def test_resolve_tool_name_exact():
+    from agent import resolve_tool_name
+
+    assert resolve_tool_name("browse_web")[0] == "browse_web"
+
+
+def test_resolve_tool_name_alias():
+    from agent import resolve_tool_name
+
+    name, note = resolve_tool_name("read_web")
+    assert name == "browse_web" and "فسّرت" in note
+
+
+def test_resolve_tool_name_fuzzy():
+    from agent import resolve_tool_name
+
+    name, note = resolve_tool_name("browse_wbe")
+    assert name == "browse_web" and "صححت" in note
+
+
+def test_resolve_tool_name_unknown():
+    from agent import resolve_tool_name
+
+    assert resolve_tool_name("nope_xyz_123")[0] is None
+
+
+def test_extract_invented_name_resolved():
+    from agent import extract_text_tool_calls
+
+    calls = extract_text_tool_calls('{"name": "read_web", "arguments": {"url": "https://example.com"}}')
+    assert calls and calls[0]["name"] == "browse_web"
 
 
 def test_auto_summary_loop():
