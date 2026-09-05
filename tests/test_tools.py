@@ -352,3 +352,18 @@ def test_extract_resolves_alias():
 
     calls = extract_text_tool_calls('{"name": "check_port", "arguments": {"port": 80}}')
     assert calls and calls[0]["name"] == "check_health"
+
+
+def test_auto_summary_loop():
+    from agent import _auto_summary
+
+    h = [("write_file", {"path": "a.txt"}, True, "✅ تم الإنشاء"),
+         ("read_file", {"path": "a.txt"}, False, "❌ غير موجود")]
+    s = _auto_summary(h, 2, 3.0, "loop")
+    assert "write_file(a.txt)" in s and "read_file" in s and "📊" in s
+
+
+def test_auto_summary_empty():
+    from agent import _auto_summary
+
+    assert "لم تُنفَّذ" in _auto_summary([], 0, 0.5, "steps")

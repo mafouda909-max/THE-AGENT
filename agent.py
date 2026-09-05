@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -120,7 +120,7 @@ SYSTEM_PROMPT = """أنت **THE WAY OUT Agent** — مهندس برمجيات ذ
 1. 💭 فكّر: افهم الطلب، ضع خطة خطوات، حدد الأدوات.
 2. ⚙️ نفّذ: أول أداة ثم انتظر النتيجة.
 3. 👀 لاحظ: اقرأ النتيجة، هل نجحت؟
-4. 🎯 قرر: نجاح → الخطوة التالية أو الإجابة النهائية. خطأ → أصلح وأعد (max 3x).
+4. 🎯 قرر: نجاح → الخطوة التالية أو الإجابة النهائية. خطأ → أصلح وأعد (max 3x). لو كل الخطوات اكتملت: اكتب التقرير النهائي فوراً (نص عربي بدون JSON) وتوقف عن الأدوات — ممنوع تكرار نفس الاستدعاء الناجح.
 5. 📢 بلّغ: تقرير نهائي مختصر بالمصري: ✅ ما تم، 📊 النتائج، 💡 الخطوة الجاية (لو relevant).
 
 ## صيغة الرد:
@@ -1618,6 +1618,30 @@ def extract_text_tool_calls(content: str) -> list:
     return calls
 
 
+def _auto_summary(history: list, tools_used: int, dt: float, reason: str) -> str:
+    """ملخص محلي تلقائي عندما يعجز الموديل الصغير عن إنهاء المهمة بنفسه."""
+    title = ("🔁 أوقفت التكرار — وهذا ملخص ما تم:" if reason == "loop"
+             else "🎯 ملخص ما تم قبل انتهاء الخطوات:")
+    lines = [title]
+    for i, (name, args, ok, snippet) in enumerate(history, 1):
+        if i > 10:
+            lines.append(f"… +{len(history) - 10} خطوات أخرى")
+            break
+        icon = "✅" if ok else "❌"
+        arg_hint = ""
+        if isinstance(args, dict):
+            for k in ("path", "file", "project", "url", "query", "command", "port", "name"):
+                if args.get(k) not in (None, ""):
+                    arg_hint = f"({args[k]})"
+                    break
+        first_line = snippet.splitlines()[0][:120] if snippet else ""
+        lines.append(f"{icon} {i}. {name}{arg_hint} — {first_line}")
+    if not history:
+        lines.append("(لم تُنفَّذ أي أداة)")
+    lines.append(f"📊 (الأدوات المستخدمة: {tools_used} | الوقت: {dt:.1f}s)")
+    return "\n".join(lines)
+
+
 def _looks_failed(result: str) -> bool:
     return result.startswith(("❌", "⛔", "⚠️"))
 
@@ -1636,6 +1660,9 @@ def run_agent(user_query: str, brain: AgentBrain,
     tools_used = 0
     fail_counts: dict[str, int] = {}
     last_text = ""
+    success_key = ""
+    success_streak = 0
+    history: list = []
 
     for step in range(1, max_steps + 1):
         msg = brain.query(messages, tools_schema)
@@ -1682,8 +1709,12 @@ def run_agent(user_query: str, brain: AgentBrain,
             print(f"{Fore.MAGENTA}   ↳ الناتج: {result[:250]}{Style.RESET_ALL}")
 
             # Self-healing guard: امنع تكرار نفس الاستدعاء الفاشل أكثر من 3 مرات
+            # Loop guard: أوقف تكرار نفس الاستدعاء *الناجح* 3 مرات ولخّص تلقائياً
+            key = fn_name + json.dumps(args, sort_keys=True, ensure_ascii=False)
+            history.append((fn_name, args, not _looks_failed(result), str(result)[:150]))
             if _looks_failed(result):
-                key = fn_name + json.dumps(args, sort_keys=True, ensure_ascii=False)
+                success_streak = 0
+                success_key = ""
                 fail_counts[key] = fail_counts.get(key, 0) + 1
                 if fail_counts[key] >= 3:
                     note = ("\n(⛔ تنبيه النظام: كررت نفس الاستدعاء الفاشل 3 مرات — "
@@ -1694,11 +1725,26 @@ def run_agent(user_query: str, brain: AgentBrain,
                 result += "\n(تلميح: فشل التنفيذ — جرّب حلاً بديلاً مختلفاً، ولا تكرر نفس الاستدعاء بحذافيره.)"
             else:
                 fail_counts.clear()
+                if key == success_key:
+                    success_streak += 1
+                else:
+                    success_key, success_streak = key, 1
+                if success_streak == 2:
+                    result += "\n(تنبيه: كررت نفس الاستدعاء الناجح — لو المهمة اكتملت اكتب التقرير النهائي الآن (نص عربي بدون JSON) وتوقف عن الأدوات.)"
+                elif success_streak >= 3:
+                    messages.append({"role": "tool", "name": fn_name, "content": result})
+                    print(f"\n{Fore.YELLOW}🔁 تكرار نفس الخطوة الناجحة 3 مرات — أوقف الحلقة وألخص.{Style.RESET_ALL}")
+                    summary = _auto_summary(history, tools_used, time.time() - t0, reason="loop")
+                    print(f"{Fore.GREEN}{summary}{Style.RESET_ALL}\n")
+                    return summary
 
             messages.append({"role": "tool", "name": fn_name, "content": result})
     else:
         last_text = f"⚠️ وصلت لأقصى عدد خطوات ({max_steps}) — جرّب تقسيم طلبك لأجزاء أصغر."
-        print(f"\n{Fore.YELLOW}{last_text}{Style.RESET_ALL}\n")
+        print(f"\n{Fore.YELLOW}{last_text}{Style.RESET_ALL}")
+        summary = _auto_summary(history, tools_used, time.time() - t0, reason="steps")
+        print(f"{Fore.GREEN}{summary}{Style.RESET_ALL}\n")
+        return summary
 
     dt = time.time() - t0
     print(f"{Fore.CYAN}📊 (الأدوات المستخدمة: {tools_used} | الوقت: {dt:.1f}s){Style.RESET_ALL}\n")
@@ -1803,6 +1849,11 @@ def self_check() -> int:
     report("JSON fallback (تجاهل غير الأدوات)", extract_text_tool_calls("نص عادي بدون أقواس") == []
            and extract_text_tool_calls('{"name": "nope_tool", "arguments": {}}') == [])
 
+    demo_hist = [("write_file", {"path": "x.txt"}, True, "✅ تم إنشاء وحفظ الملف: `x.txt`"),
+                 ("read_file", {"path": "x.txt"}, True, "print('hi')")]
+    s = _auto_summary(demo_hist, 2, 1.5, "loop")
+    report("auto-summary (ملخص التكرار)", "write_file(x.txt)" in s and "📊" in s, s[:100])
+
     # التقارير النهائية
     brain = AgentBrain()
     ok, detail = brain.check_connection()
@@ -1820,7 +1871,7 @@ def self_check() -> int:
 # ===========================================================================
 BANNER = """
 ╔══════════════════════════════════════════════════════════╗
-║     🚀  T H E   W A Y   O U T   A G E N T  v2.2         ║
+║     🚀  T H E   W A Y   O U T   A G E N T  v2.3         ║
 ║   There's always a way out — دايماً في طريق للخروج     ║
 ╚══════════════════════════════════════════════════════════╝
 """
