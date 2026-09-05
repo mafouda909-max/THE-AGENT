@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -545,8 +545,14 @@ class Tools:
                         "README.md": readme, ".gitignore": gitignore},
             "static": {"index.html": static_html, "README.md": readme},
         }
+        note = ""
         if template not in templates:
-            return f"❌ القالب `{template}` غير معروف — المتاح: {', '.join(templates)}."
+            # تسامح مع الموديلات الصغيرة: تستخرج اسم القالب من نص مشوش مثل "basic/flask/fastapi/static"
+            found = [k for k in templates if k in template]
+            if not found:
+                return f"❌ القالب `{template}` غير معروف — المتاح: {', '.join(templates)}."
+            note = f" (فسّرت `{template}` كـ `{found[0]}`)"
+            template = found[0]
         try:
             for rel, content in templates[template].items():
                 Tools.write_file(str(dest / rel), content)
@@ -554,7 +560,7 @@ class Tools:
             nxt = {"basic": 'run_python("NAME/app.py")', "flask": 'ثبّت flask ثم launch_project("NAME/app.py")',
                    "fastapi": 'ثبّت fastapi و uvicorn ثم شغل: uvicorn main:app',
                    "static": 'launch_project("NAME/index.html") — أو افتح الملف في المتصفح'}.get(template, "")
-            return (f"✅ تم إنشاء المشروع `{name}` (قالب {template}) — الملفات: {files}\n"
+            return (f"✅ تم إنشاء المشروع `{name}` (قالب {template}){note} — الملفات: {files}\n"
                     f"💡 الخطوة الجاية: {nxt}".replace("NAME", name))
         except Exception as e:  # noqa: BLE001
             return f"❌ فشل إنشاء المشروع: {e}"
@@ -1826,12 +1832,27 @@ def run_agent(user_query: str, brain: AgentBrain,
                 success_key = ""
                 fail_counts[key] = fail_counts.get(key, 0) + 1
                 if fail_counts[key] >= 3:
+                    # إنقاذ أخير: نفّذ النية الآمنة الواضحة مباشرة قبل الاستسلام
+                    rname, rres = _route_intent(user_query)
+                    if rname:
+                        tools_used += 1
+                        history.append((rname, {}, not _looks_failed(rres), str(rres)[:150]))
+                        print(f"\n{Fore.CYAN}🤖 (الموديل فشل 3 مرات — نفّذت النية مباشرة: {rname}){Style.RESET_ALL}")
+                        print(f"{Fore.MAGENTA}   ↳ الناتج: {str(rres)[:250]}{Style.RESET_ALL}")
+                        final = f"🤖 الموديل تعثر 3 مرات، فنفّذت طلبك مباشرة:\n{rres}"
+                        print(f"\n{Fore.GREEN}🎯 النتيجة:\n{final}{Style.RESET_ALL}")
+                        dt = time.time() - t0
+                        print(f"{Fore.CYAN}📊 (الأدوات المستخدمة: {tools_used} | الوقت: {dt:.1f}s){Style.RESET_ALL}\n")
+                        return f"{final}\n📊 (الأدوات المستخدمة: {tools_used} | الوقت: {dt:.1f}s)"
                     note = ("\n(⛔ تنبيه النظام: كررت نفس الاستدعاء الفاشل 3 مرات — "
                             "توقف فوراً، اشرح المشكلة للمستخدم بالعربي، واقترح حلاً بديلاً.)")
                     messages.append({"role": "tool", "name": fn_name, "content": result + note})
                     print(f"\n{Fore.RED}🛑 تكرار فاشل 3 مرات — إيقاف الحلقة.{Style.RESET_ALL}\n")
                     return f"❌ توقفت بعد 3 محاولات فاشلة لنفس الاستدعاء: {fn_name} — راجع الخطأ أعلاه."
                 result += "\n(تلميح: فشل التنفيذ — جرّب حلاً بديلاً مختلفاً، ولا تكرر نفس الاستدعاء بحذافيره.)"
+                intent = _match_intent(user_query)
+                if intent and intent[0] != fn_name:
+                    result += f"\n(تلميح قوي: المطلوب على الأرجح `{intent[0]}` — استدعِه الآن بدلاً من تكرار `{fn_name}`.)"
             else:
                 fail_counts.clear()
                 if key == success_key:
@@ -1917,6 +1938,8 @@ def self_check() -> int:
         try:
             r3 = Tools.create_project("demo1", "basic")
             report("create_project", "تم إنشاء" in r3 and Path("demo1/app.py").exists())
+            r_fz = Tools.create_project("demo2", "basic/flask/fastapi/static")
+            report("create_project (قالب مشوش)", "تم إنشاء" in r_fz and "فسّرت" in r_fz)
             s = socket.socket()
             s.bind(("127.0.0.1", 0))
             free_port = s.getsockname()[1]
@@ -1988,7 +2011,7 @@ def self_check() -> int:
 # ===========================================================================
 BANNER = """
 ╔══════════════════════════════════════════════════════════╗
-║     🚀  T H E   W A Y   O U T   A G E N T  v2.5         ║
+║     🚀  T H E   W A Y   O U T   A G E N T  v2.6         ║
 ║   There's always a way out — دايماً في طريق للخروج     ║
 ╚══════════════════════════════════════════════════════════╝
 """

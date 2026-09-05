@@ -167,6 +167,13 @@ def test_create_project_bad_template(monkeypatch, tmp_path):
     assert "غير معروف" in Tools.create_project("p2", "django-x")
 
 
+def test_create_project_fuzzy_template(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    out = Tools.create_project("fz1", "basic/flask/fastapi/static")
+    assert "تم إنشاء" in out and "فسّرت" in out
+    assert Path("fz1/app.py").exists()
+
+
 def test_create_project_refuses_nonempty(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     Path("p3").mkdir()
