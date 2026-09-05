@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -86,6 +86,7 @@ SYSTEM_PROMPT = """أنت **THE WAY OUT Agent** — مهندس برمجيات ذ
 ### 1. التنفيذ الفعلي أولاً (Execution First)
 - **ما تقولش "هعمل"** — نفّذ فوراً باستخدام الـ tools المتاحة.
 - "اعمل ملف" → `write_file` مباشرة. "شغل المشروع" → `launch_project` مباشرة. "افحص الموقع" → `browse_web` مباشرة.
+- استدعِ الأدوات عبر آلية function calling فقط — **ممنوع كتابة JSON كنص في ردك**. النصوص (مثل content) أرسلها خاماً بدون تغليف في كائنات.
 - نفّذ بافتراضات منطقية واذكرها، بدل ما تسأل أسئلة كتير.
 
 ### 2. القراءة قبل الكتابة (Read Before Write)
@@ -1509,7 +1510,7 @@ class AgentBrain:
 
     def query(self, messages: list, tools: list | None = None) -> dict:
         payload = {"model": self.model, "messages": messages, "stream": False,
-                   "options": {"temperature": 0.1, "num_ctx": OLLAMA_NUM_CTX}}
+                   "options": {"temperature": 0.1, "num_ctx": OLLAMA_NUM_CTX, "num_predict": 1024}}
         if tools:
             payload["tools"] = tools
         data = self._post_chat(payload, timeout=180)
@@ -1559,6 +1560,64 @@ def _parse_tool_args(raw_args) -> dict:
     return {}
 
 
+def _normalize_tool_args(args: dict) -> dict:
+    """يفك أغلفة {type,value} التي تكتبها الموديلات الصغيرة ويحوّل القواميس لنصوص."""
+    norm = {}
+    for k, v in (args or {}).items():
+        if isinstance(v, dict) and "value" in v and len(v) <= 3:
+            v = v["value"]
+        if isinstance(v, (dict, list)):
+            v = json.dumps(v, ensure_ascii=False)
+        norm[k] = v
+    return norm
+
+
+def extract_text_tool_calls(content: str) -> list:
+    """مُنقذ الموديلات الصغيرة: يستخرج استدعاءات أدوات من JSON مكتوب كنص.
+
+    يقبل: بلوكات ```json و JSON خام، وبأشكال {name,arguments} أو
+    {function:{name,arguments}} أو {tool,parameters}. يرجع قائمة
+    [{name, arguments}] للأدوات المعروفة فقط (حد أقصى 3).
+    """
+    if not content or "{" not in content or "}" not in content:
+        return []
+    candidates: list[str] = []
+    for m in re.finditer(r"```(?:json)?\s*\n(.*?)```", content, flags=re.S | re.I):
+        candidates.append(m.group(1))
+    if not candidates:
+        m = re.search(r"\{.*\}", content, flags=re.S)
+        if m:
+            candidates.append(m.group(0))
+    calls = []
+    for c in candidates:
+        try:
+            obj = json.loads(c.strip())
+        except json.JSONDecodeError:
+            continue
+        items = obj if isinstance(obj, list) else [obj]
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            name, args = None, {}
+            if "name" in it and isinstance(it.get("name"), str):
+                name, args = it["name"], _parse_tool_args(it.get("arguments", {}))
+            elif isinstance(it.get("function"), dict):
+                fn = it["function"]
+                name, args = fn.get("name"), _parse_tool_args(fn.get("arguments", {}))
+            elif "tool" in it and isinstance(it.get("tool"), str):
+                name = it["tool"]
+                args = _parse_tool_args(it.get("parameters", it.get("arguments", {})))
+            if not name or not isinstance(name, str):
+                continue
+            name = TOOL_ALIASES.get(name, name)
+            if name not in TOOLS_SCHEMA:
+                continue
+            calls.append({"name": name, "arguments": _normalize_tool_args(args)})
+            if len(calls) >= 3:
+                return calls
+    return calls
+
+
 def _looks_failed(result: str) -> bool:
     return result.startswith(("❌", "⛔", "⚠️"))
 
@@ -1586,6 +1645,13 @@ def run_agent(user_query: str, brain: AgentBrain,
         if content.strip():
             last_text = content.strip()
             print(f"{Fore.YELLOW}💭 الإيجنت: {content}{Style.RESET_ALL}")
+
+        # مُنقذ الموديلات الصغيرة: لو كتبت JSON كنص بدل استدعاء حقيقي — التقطه ونفّذه
+        if not tool_calls and content.strip():
+            rescued = extract_text_tool_calls(content)
+            if rescued:
+                print(f"{Fore.CYAN}🔧 (الموديل كتب JSON كنص — التقطت {len(rescued)} استدعاء وأنفّذه){Style.RESET_ALL}")
+                tool_calls = [{"function": {"name": c["name"], "arguments": c["arguments"]}} for c in rescued]
 
         if not tool_calls:
             if content.strip().startswith("❌ خطأ في الاتصال"):
@@ -1730,6 +1796,13 @@ def self_check() -> int:
         r7 = Tools.browse_web("https://example.com")
         report("browse_web (يحتاج إنترنت)", True if "محتوى الموقع" in r7 or "العنوان" in r7 else None, r7[:100])
 
+    # مُنقذ JSON-كنص (محاكاة سلوك الموديل الصغير)
+    fake = "سأنفذ:\n```json\n{\"name\": \"write_file\", \"arguments\": {\"path\": \"x.txt\", \"content\": {\"type\": \"string\", \"value\": \"hi\"}}}\n```"
+    rescued = extract_text_tool_calls(fake)
+    report("JSON fallback (التقاط من النص)", len(rescued) == 1 and rescued[0]["arguments"].get("content") == "hi", str(rescued)[:100])
+    report("JSON fallback (تجاهل غير الأدوات)", extract_text_tool_calls("نص عادي بدون أقواس") == []
+           and extract_text_tool_calls('{"name": "nope_tool", "arguments": {}}') == [])
+
     # التقارير النهائية
     brain = AgentBrain()
     ok, detail = brain.check_connection()
@@ -1747,7 +1820,7 @@ def self_check() -> int:
 # ===========================================================================
 BANNER = """
 ╔══════════════════════════════════════════════════════════╗
-║     🚀  T H E   W A Y   O U T   A G E N T  v2.1         ║
+║     🚀  T H E   W A Y   O U T   A G E N T  v2.2         ║
 ║   There's always a way out — دايماً في طريق للخروج     ║
 ╚══════════════════════════════════════════════════════════╝
 """

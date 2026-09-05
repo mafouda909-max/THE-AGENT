@@ -318,3 +318,37 @@ def test_schedule_dry_run(monkeypatch, tmp_path):
     out = Tools.schedule_task("09:30", "echo hello-sched")
     assert "30 9 * * *" in out
     assert "hello-sched" in Path("scheduled_tasks.txt").read_text(encoding="utf-8")
+
+
+# ---------------- JSON fallback (small models) ----------------
+
+def test_extract_json_block_call():
+    from agent import extract_text_tool_calls
+
+    text = '```json\n{"name": "write_file", "arguments": {"path": "a.txt", "content": "hi"}}\n```'
+    calls = extract_text_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "write_file"
+    assert calls[0]["arguments"] == {"path": "a.txt", "content": "hi"}
+
+
+def test_extract_unwraps_value_objects():
+    from agent import extract_text_tool_calls
+
+    text = '{"name": "write_file", "arguments": {"path": "a.txt", "content": {"type": "string", "value": "hi"}}}'
+    calls = extract_text_tool_calls(text)
+    assert calls[0]["arguments"]["content"] == "hi"
+
+
+def test_extract_ignores_unknown_tools_and_plain_text():
+    from agent import extract_text_tool_calls
+
+    assert extract_text_tool_calls("نص عادي بدون أي أقواس") == []
+    assert extract_text_tool_calls('{"name": "nope_tool", "arguments": {}}') == []
+
+
+def test_extract_resolves_alias():
+    from agent import extract_text_tool_calls
+
+    calls = extract_text_tool_calls('{"name": "check_port", "arguments": {"port": 80}}')
+    assert calls and calls[0]["name"] == "check_health"
