@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "2.6.0"
+__version__ = "2.7.0"
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -457,7 +457,8 @@ class Tools:
                 return f"❌ الملف `{target}` غير موجود — تحقق بالـ list_directory الأول."
             else:
                 cmd = [sys.executable, "-c", target]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=AGENT_TIMEOUT)
+            env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=AGENT_TIMEOUT, env=env)
             out = (res.stdout.strip() + ("\n" + res.stderr.strip() if res.stderr.strip() else "")).strip()
             out = out or "(اشتغل بدون مخرجات)"
             if res.returncode != 0:
@@ -524,7 +525,7 @@ class Tools:
         if dest.exists() and any(dest.iterdir()):
             return f"❌ المجلد `{name}` موجود وغير فارغ — اختر اسماً آخر أو احذفه أولاً."
 
-        basic_app = 'print("🚀 Hello from THE WAY OUT project!")\n'
+        basic_app = 'print("Hello from THE WAY OUT project!")\n'
         flask_app = ('from flask import Flask\napp = Flask(__name__)\n\n'
                      '@app.route("/")\ndef home():\n    return "<h1>🚀 Flask is running!</h1>"\n\n'
                      'if __name__ == "__main__":\n    app.run(port=5000, debug=True)\n')
@@ -605,9 +606,10 @@ if __name__ == "__main__":
         log_path = logs_dir / f"{name}.log"
         try:
             log_f = open(log_path, "w", encoding="utf-8")
+            penv = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
             proc = subprocess.Popen([sys.executable, entry_file],
                                     stdout=log_f, stderr=subprocess.STDOUT,
-                                    text=True, bufsize=1)
+                                    text=True, bufsize=1, env=penv)
         except Exception as e:  # noqa: BLE001
             return f"❌ فشل تشغيل `{entry_file}`: {e}"
 
@@ -618,8 +620,13 @@ if __name__ == "__main__":
         time.sleep(1.5)
 
         if proc.poll() is not None:
+            code = proc.poll()
             err = Tools.read_logs(name, 15)
-            return f"❌ السيرفر توقف فور تشغيله. آخر اللوجات:\n{err}"
+            if code == 0:
+                return (f"ℹ️ الملف `{entry_file}` اشتغل وخلص فوراً (كود 0) — ده سكربت عادي مش سيرفر دائم، "
+                        f"فعشان كده مفيش حاجة على المنفذ {port}. الناتج:\n{err}\n"
+                        "💡 لو عايز سيرفر دائم: استخدم قالب static/flask/fastapi أو ملف فيه serve_forever.")
+            return f"❌ السيرفر توقف فور تشغيله (كود {code}). آخر اللوجات:\n{err}"
         status = Tools.check_health(port)
         if "مفتوح" in status:
             return (f"🚀 تم تشغيل المشروع `{name}` بنجاح على http://localhost:{port}\n"
@@ -1954,6 +1961,10 @@ def self_check() -> int:
             r5 = Tools.call_api(f"http://127.0.0.1:{free_port}/")
             report("call_api (محلي)", "HTTP 200" in r5, r5[:80])
             report("stop_project", "تم إيقاف" in Tools.stop_project("t1"))
+            Tools.write_file("quick.py", 'print("done-quick")')
+            r_nano = Tools.launch_project(entry_file="quick.py", port=free_port, name="nano")
+            Tools.stop_project("nano")
+            report("launch_project (سكربت مش سيرفر)", "مش سيرفر" in r_nano, r_nano[:100])
             # الجدولة (وضع تجريبي آمن — لا يمس النظام)
             os.environ["SCHEDULE_DRY_RUN"] = "1"
             r_dry = Tools.schedule_task("09:30", "echo sched-test")
@@ -2011,7 +2022,7 @@ def self_check() -> int:
 # ===========================================================================
 BANNER = """
 ╔══════════════════════════════════════════════════════════╗
-║     🚀  T H E   W A Y   O U T   A G E N T  v2.6         ║
+║     🚀  T H E   W A Y   O U T   A G E N T  v2.7         ║
 ║   There's always a way out — دايماً في طريق للخروج     ║
 ╚══════════════════════════════════════════════════════════╝
 """

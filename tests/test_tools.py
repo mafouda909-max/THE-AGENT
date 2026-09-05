@@ -174,6 +174,23 @@ def test_create_project_fuzzy_template(monkeypatch, tmp_path):
     assert Path("fz1/app.py").exists()
 
 
+def test_basic_template_ascii_safe(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    Tools.create_project("ascii1", "basic")
+    src = Path("ascii1/app.py").read_text(encoding="utf-8")
+    assert all(ord(c) < 128 for c in src), "basic template must be Windows-console safe"
+
+
+def test_launch_quick_script_reports_not_a_server(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    Tools.write_file("quick.py", 'print("done-quick")')
+    out = Tools.launch_project(entry_file="quick.py", port=_free_port(), name="nano-test")
+    try:
+        assert "مش سيرفر" in out
+    finally:
+        Tools.stop_project("nano-test")
+
+
 def test_create_project_refuses_nonempty(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     Path("p3").mkdir()
