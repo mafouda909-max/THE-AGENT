@@ -38,7 +38,32 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "3.1.0"
+__version__ = "3.1.1"
+
+# ---------------------------------------------------------------------------
+# ترميز آمن على Windows: لازم قبل colorama.
+# بدون ده، أي إيموجي يكسر البرنامج عندما يُلتقط الناتج في متغير/أنبوب
+# (الكونسول يرجع لـ cp1252 → UnicodeEncodeError).
+# ---------------------------------------------------------------------------
+for _stream in ("stdout", "stderr"):
+    _s = getattr(sys, _stream, None)
+    try:
+        if _s is not None and hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # pragma: no cover
+        pass
+
+
+def safe_print(*args, **kwargs) -> None:
+    """طباعة لا تنكسر أبداً بسبب الترميز (احتياطي أخير)."""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:  # pragma: no cover
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        cleaned = [str(a).encode(enc, errors="replace").decode(enc, errors="replace")
+                   for a in args]
+        print(*cleaned, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -2331,14 +2356,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.brain_check:
         if not frontier_configured():
-            print("❌ العقل القوي غير مفعّل (FRONTIER_API_KEY ناقص في .env)\n")
-            print(FRONTIER_SETUP_HELP)
+            safe_print("[X] العقل القوي غير مفعّل (FRONTIER_API_KEY ناقص في .env)\n")
+            safe_print(FRONTIER_SETUP_HELP)
             return 1
         fb = FrontierBrain()
         ok, msg = fb.check_connection()
-        print(("✅ " if ok else "❌ ") + msg)
+        safe_print(("[OK] " if ok else "[X] ") + str(msg))
         if not ok:
-            print("\n" + FRONTIER_SETUP_HELP)
+            safe_print("\n" + FRONTIER_SETUP_HELP)
         return 0 if ok else 1
 
     prefer = None if args.brain in (None, "auto") else (args.brain == "frontier")

@@ -612,3 +612,33 @@ def test_goal_summary_delivered_on_success_repeat(monkeypatch):
     assert "Example Domain body" in out          # المحتوى الحقيقي مسلَّم
     assert "browse_web" in out
     assert calls["n"] <= 2                        # وقف بسرعة، مش 3 مرات
+
+
+def test_safe_print_survives_unencodable_console(monkeypatch, capsys):
+    """الإيموجي يجب ألا يُسقط البرنامج على كونسول cp1252."""
+    import agent
+
+    class Cp1252Stdout:
+        encoding = "cp1252"
+
+        def write(self, text):
+            text.encode("cp1252")   # يرفع UnicodeEncodeError على الإيموجي
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(agent.sys, "stdout", Cp1252Stdout())
+    agent.safe_print("❌ نص فيه إيموجي")   # المفروض ما يرفعش استثناء
+
+
+def test_brain_check_output_is_ascii_safe():
+    """مخرجات --brain-check لا تحتوي إيموجي (تُلتقط في متغيرات PowerShell)."""
+    import subprocess
+    import sys as _s
+
+    p = subprocess.run([_s.executable, "agent.py", "--brain-check"],
+                       capture_output=True, text=True, timeout=120)
+    out = p.stdout
+    assert "[X]" in out or "[OK]" in out
+    for ch in ("\u274c", "\u2705"):
+        assert ch not in out.splitlines()[0]
