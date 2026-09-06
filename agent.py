@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "3.1.2"
+__version__ = "3.1.3"
 
 # ---------------------------------------------------------------------------
 # ترميز آمن على Windows: لازم قبل colorama.
@@ -199,6 +199,13 @@ FRONTIER_SETUP_HELP = """💡 للإجابات الأقوى مجاناً (دقي
    FRONTIER_MODEL=gemini-2.0-flash"""
 
 
+#: بعض البوابات خلف Cloudflare ترفض User-Agent الافتراضي لـurllib (خطأ 1010)
+FRONTIER_USER_AGENT = os.getenv(
+    "FRONTIER_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+
 def frontier_configured() -> bool:
     return bool(FRONTIER_API_KEY)
 
@@ -223,8 +230,12 @@ def frontier_chat(messages: list, model: str | None = None,
     req = urllib.request.Request(
         f"{FRONTIER_BASE_URL}/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
+        # User-Agent إلزامي: بوابات خلف Cloudflare ترفض الطلبات بلا متصفح
+        # معروف (error 1010) — urllib يرسل "Python-urllib/x.y" افتراضياً.
         headers={"Content-Type": "application/json",
                  "Authorization": f"Bearer {FRONTIER_API_KEY}",
+                 "Accept": "application/json",
+                 "User-Agent": FRONTIER_USER_AGENT,
                  "HTTP-Referer": "https://github.com/mafouda909-max/THE-AGENT",
                  "X-Title": "THE WAY OUT Agent"},
     )
@@ -244,7 +255,9 @@ def frontier_chat(messages: list, model: str | None = None,
             provider_msg = detail
         hints = {401: "المفتاح غلط أو منتهي — راجع FRONTIER_API_KEY.",
                  402: "رصيد غير كافٍ — استخدم موديلاً مجانياً (...:free).",
-                 403: "مرفوض — غالباً إعدادات الخصوصية/الصلاحيات على حسابك.",
+                 403: ("مرفوض. لو الرسالة فيها 1010 فهذا حجب Cloudflare "
+                       "لهوية العميل — جرّب ضبط FRONTIER_USER_AGENT في .env، "
+                       "وإلا فراجع صلاحيات/خصوصية حسابك."),
                  404: (f"الموديل `{mdl}` غير متاح لحسابك. الأشهر: الموديلات "
                        f"المجانية تحتاج تفعيل سياسة البيانات من "
                        f"https://openrouter.ai/settings/privacy"),

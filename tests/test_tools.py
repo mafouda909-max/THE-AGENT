@@ -662,3 +662,30 @@ def test_frontier_error_surfaces_provider_message(monkeypatch):
     assert ok is False
     assert "No endpoints found matching your data policy" in msg   # الرسالة الحقيقية
     assert "settings/privacy" in msg                                # الإرشاد الصحيح
+
+
+def test_frontier_sends_browser_user_agent(monkeypatch):
+    """Cloudflare (error 1010) يرفض User-Agent الافتراضي لـurllib."""
+    import agent
+
+    captured = {}
+
+    class FakeResp:
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=0):
+        captured["ua"] = req.get_header("User-agent")
+        return FakeResp()
+
+    monkeypatch.setattr(agent, "FRONTIER_API_KEY", "sk-test")
+    monkeypatch.setattr(agent.urllib.request, "urlopen", fake_urlopen)
+    agent.frontier_chat([{"role": "user", "content": "hi"}], model="m")
+    assert captured["ua"] and "urllib" not in captured["ua"].lower()
+    assert "Mozilla" in captured["ua"]
