@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "3.1.3"
+__version__ = "3.1.4"
 
 # ---------------------------------------------------------------------------
 # ترميز آمن على Windows: لازم قبل colorama.
@@ -258,9 +258,10 @@ def frontier_chat(messages: list, model: str | None = None,
                  403: ("مرفوض. لو الرسالة فيها 1010 فهذا حجب Cloudflare "
                        "لهوية العميل — جرّب ضبط FRONTIER_USER_AGENT في .env، "
                        "وإلا فراجع صلاحيات/خصوصية حسابك."),
-                 404: (f"الموديل `{mdl}` غير متاح لحسابك. الأشهر: الموديلات "
-                       f"المجانية تحتاج تفعيل سياسة البيانات من "
-                       f"https://openrouter.ai/settings/privacy"),
+                 404: (f"الموديل `{mdl}` غير متاح على {FRONTIER_BASE_URL}. "
+                       f"اعرض المتاح فعلاً: GET {FRONTIER_BASE_URL}/models "
+                       f"(على OpenRouter تحديداً قد يعني تفعيل سياسة البيانات "
+                       f"من https://openrouter.ai/settings/privacy)"),
                  429: "تجاوزت الحد المجاني — انتظر دقيقة وحاول."}
         msg = f"خطأ {e.code}: {hints.get(e.code, e.reason)}"
         if provider_msg:

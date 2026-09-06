@@ -689,3 +689,20 @@ def test_frontier_sends_browser_user_agent(monkeypatch):
     agent.frontier_chat([{"role": "user", "content": "hi"}], model="m")
     assert captured["ua"] and "urllib" not in captured["ua"].lower()
     assert "Mozilla" in captured["ua"]
+
+
+def test_404_hint_names_actual_provider(monkeypatch):
+    """إرشاد 404 يجب أن يشير للمزود الحالي لا لـOpenRouter دائماً."""
+    import agent
+    import io
+
+    def raise_404(req, timeout=0):
+        raise agent.urllib.error.HTTPError("u", 404, "Not Found", {}, io.BytesIO(b"{}"))
+
+    monkeypatch.setattr(agent, "FRONTIER_API_KEY", "sk-test")
+    monkeypatch.setattr(agent, "FRONTIER_BASE_URL", "https://api.cerebras.ai/v1")
+    monkeypatch.setattr(agent.urllib.request, "urlopen", raise_404)
+    ok, msg = agent.frontier_chat([{"role": "user", "content": "hi"}], model="bad")
+    assert ok is False
+    assert "api.cerebras.ai" in msg
+    assert "/models" in msg
