@@ -36,3 +36,6 @@ Desktop.ini
 .pytest_cache/
 .coverage
 htmlcov/
+
+# LENS Operator runtime memory (evidence is local, not committed by default)
+memory/
