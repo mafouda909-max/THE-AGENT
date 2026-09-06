@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "2.8.0"
+__version__ = "2.9.0"
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -1724,6 +1724,44 @@ def _match_intent(query: str):
     return None
 
 
+_GOAL_READ = ["اقرأ موقع", "افتح موقع", "لخص", "لخّص", "محتوى الموقع", "تصفح",
+              "read website", "browse", "summarize", "summarise", "open url", "http"]
+_GOAL_SEARCH = ["ابحث", "بحث", "search", "دور على", "دوّر على"]
+_GOAL_FILE = ["اقرأ ملف", "افتح ملف", "read file", "open file", "اعرض ملف"]
+
+
+def _goal_tools(query: str) -> set:
+    """الأدوات التي يعتبر نجاحها إنجازاً لهدف المستخدم (لا استدعاء — دالة خالصة)."""
+    q = (query or "").strip().lower()
+    goals = set()
+    if any(k in q for k in _GOAL_READ):
+        goals.add("browse_web")
+    if any(k in q for k in _GOAL_SEARCH):
+        goals |= {"web_search", "browse_web"}
+    if any(k in q for k in _GOAL_FILE):
+        goals.add("read_file")
+    intent = _match_intent(query)
+    if intent:
+        goals.add(intent[0])
+    return goals
+
+
+def _goal_satisfied(query: str, fn_name: str) -> bool:
+    """هل نجاح هذه الأداة يحقق هدف المستخدم؟"""
+    return bool(fn_name) and fn_name in _goal_tools(query)
+
+
+def _goal_summary(query: str, fn_name: str, result: str,
+                  tools_used: int, dt: float) -> str:
+    """تسليم النتيجة المُحقِّقة للهدف عندما يعجز الموديل عن كتابة الملخص."""
+    body = (result or "").strip()
+    if len(body) > 1800:
+        body = body[:1800] + " …"
+    return (f"✅ المهمة اتنفذت (عبر `{fn_name}`) — الموديل تاه بعدها، "
+            f"فبسلّمك الناتج مباشرة:\n\n{body}\n\n"
+            f"📊 (الأدوات المستخدمة: {tools_used} | الوقت: {dt:.1f}s)")
+
+
 def _route_intent(query: str):
     """الملاذ الأخير: ينفذ نية آمنة واضحة مباشرة. يرجع (الاسم, النتيجة) أو (None, '')."""
     m = _match_intent(query)
@@ -1807,6 +1845,7 @@ def run_agent(user_query: str, brain: AgentBrain,
     history: list = []
     nudges_used = 0
 
+    goal_done = None  # (fn_name, result) لأول نجاح يحقق هدف المستخدم
     for step in range(1, max_steps + 1):
         msg = brain.query(messages, tools_schema)
         content = msg.get("content", "") or ""
@@ -1901,6 +1940,14 @@ def run_agent(user_query: str, brain: AgentBrain,
                 success_streak = 0
                 success_key = ""
                 fail_counts[key] = fail_counts.get(key, 0) + 1
+                if goal_done is not None and fail_counts[key] >= 2:
+                    dt = time.time() - t0
+                    print(f"\n{Fore.YELLOW}🎯 الهدف تحقق قبل كده — بوقف اللف وأسلّم "
+                          f"ناتج `{goal_done[0]}`.{Style.RESET_ALL}")
+                    final = _goal_summary(user_query, goal_done[0], goal_done[1],
+                                          tools_used, dt)
+                    print(f"{Fore.GREEN}{final}{Style.RESET_ALL}\n")
+                    return final
                 if fail_counts[key] >= 3:
                     # إنقاذ أخير: نفّذ النية الآمنة الواضحة مباشرة قبل الاستسلام
                     rname, rres = _route_intent(user_query)
@@ -1925,6 +1972,11 @@ def run_agent(user_query: str, brain: AgentBrain,
                     result += f"\n(تلميح قوي: المطلوب على الأرجح `{intent[0]}` — استدعِه الآن بدلاً من تكرار `{fn_name}`.)"
             else:
                 fail_counts.clear()
+                if goal_done is None and _goal_satisfied(user_query, fn_name):
+                    goal_done = (fn_name, result)
+                    result += ("\n(✅ تنبيه النظام: دي كانت المهمة المطلوبة وقد نجحت. "
+                               "توقف عن استدعاء الأدوات فوراً واكتب الملخص النهائي "
+                               "بالعربي كنص عادي بدون JSON.)")
                 if key == success_key:
                     success_streak += 1
                 else:
@@ -2063,6 +2115,9 @@ def self_check() -> int:
     report("no-action detector (أمر تنفيذي)", _looks_like_action("شغّل مشروع THE WAY OUT") is True)
     report("no-action detector (سؤال)", _looks_like_action("ازاي أشغل المشروع؟") is False)
     report("no-action detector (تحية)", _looks_like_action("سلام عليكم") is False)
+    report("goal detector (ويب)", _goal_satisfied("اقرأ موقع https://x.com ولخصه", "browse_web") is True)
+    report("goal detector (غير متعلق)", _goal_satisfied("اقرأ موقع https://x.com", "delete_file") is False)
+    report("goal summary يحتوي الناتج", "ABC" in _goal_summary("اقرأ موقع", "browse_web", "ABC", 1, 0.5))
 
     report("intent router (تشغيل)", _match_intent("شغّل مشروع THE WAY OUT") == ("launch_project", {"port": 5000}))
     report("intent router (منفذ)", _match_intent("افحص المنفذ 5000") == ("check_health", {"port": 5000}))

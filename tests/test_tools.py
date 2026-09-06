@@ -474,3 +474,29 @@ def test_match_intent_none():
 
     assert _match_intent("اكتب قصيدة عن البحر") is None
     assert _match_intent("سلام عليكم") is None
+
+
+def test_goal_satisfied_web():
+    from agent import _goal_satisfied
+
+    assert _goal_satisfied("اقرأ موقع https://example.com ولخصه", "browse_web") is True
+    assert _goal_satisfied("اقرأ موقع https://example.com ولخصه", "delete_file") is False
+
+
+def test_goal_satisfied_launch():
+    from agent import _goal_satisfied
+
+    assert _goal_satisfied("شغّل مشروع THE WAY OUT", "launch_project") is True
+
+
+def test_goal_tools_empty_for_chitchat():
+    from agent import _goal_tools
+
+    assert _goal_tools("سلام عليكم") == set()
+
+
+def test_goal_summary_contains_result():
+    from agent import _goal_summary
+
+    out = _goal_summary("اقرأ موقع", "browse_web", "Example Domain content", 2, 1.0)
+    assert "Example Domain content" in out and "browse_web" in out
