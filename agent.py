@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "2.9.0"
+__version__ = "3.0.0"
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -179,14 +179,22 @@ def frontier_configured() -> bool:
 
 
 def frontier_chat(messages: list, model: str | None = None,
-                  timeout: int = 120) -> tuple[bool, str]:
-    """محادثة عبر مزود OpenAI-compatible. ترجع (نجاح, النص/الخطأ)."""
+                  timeout: int = 120, tools: list | None = None,
+                  return_message: bool = False):
+    """محادثة عبر مزود OpenAI-compatible.
+
+    ترجع (نجاح, النص/الخطأ) — أو (نجاح, رسالة كاملة dict) لو return_message=True،
+    وهو ما يتيح استدعاء الأدوات الأصلي (tool_calls) عبر المزود القوي.
+    """
     if not FRONTIER_API_KEY:
         return False, "FRONTIER_API_KEY غير مضبوط في .env"
     mdl = (model or FRONTIER_MODEL or "").strip()
     if not mdl:
         return False, "FRONTIER_MODEL غير مضبوط في .env"
     payload = {"model": mdl, "messages": messages}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     req = urllib.request.Request(
         f"{FRONTIER_BASE_URL}/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
@@ -213,7 +221,10 @@ def frontier_chat(messages: list, model: str | None = None,
     choices = data.get("choices", [])
     if not choices:
         return False, f"رد فارغ من المزود: {str(data)[:300]}"
-    content = (choices[0].get("message", {}).get("content", "") or "").strip()
+    message = choices[0].get("message", {}) or {}
+    if return_message:
+        return True, message
+    content = (message.get("content", "") or "").strip()
     if not content:
         return False, "المزود رجع إجابة فارغة."
     return True, content
@@ -1590,13 +1601,96 @@ class AgentBrain:
         return (data.get("message", {}).get("content", "") or "").strip() or None
 
 
-_BRAIN_SINGLETON: AgentBrain | None = None
+class FrontierBrain:
+    """عقل قوي مجاني عبر مزود OpenAI-compatible — بنفس واجهة AgentBrain.
+
+    يدعم استدعاء الأدوات الأصلي، ويرجع تلقائياً للموديل المحلي عند أي فشل
+    (انقطاع إنترنت، تجاوز الحصة المجانية، مفتاح غلط) — فيبقى المشروع محلي أولاً.
+    """
+
+    def __init__(self, model: str | None = None, fallback: "AgentBrain | None" = None):
+        self.model = (model or FRONTIER_MODEL or "").strip()
+        self.base_url = FRONTIER_BASE_URL
+        self.fallback = fallback or AgentBrain()
+        self.last_error = ""
+        self.used_fallback = False
+
+    def list_models(self) -> list:
+        return [self.model]
+
+    def check_connection(self) -> tuple[bool, str]:
+        if not frontier_configured():
+            return False, "FRONTIER_API_KEY غير مضبوط — العقل القوي غير مفعّل."
+        ok, res = frontier_chat([{"role": "user", "content": "ping"}],
+                                model=self.model, timeout=30)
+        if ok:
+            return True, f"متصل بالعقل القوي: {self.model}"
+        return False, str(res)
+
+    def _to_ollama_message(self, message: dict) -> dict:
+        """يحوّل رسالة OpenAI-style إلى الشكل الذي تتوقعه حلقة الإيجنت."""
+        out = {"role": "assistant", "content": message.get("content") or ""}
+        calls = []
+        for c in message.get("tool_calls") or []:
+            fn = c.get("function", {}) or {}
+            if fn.get("name"):
+                calls.append({"function": {"name": fn["name"],
+                                           "arguments": fn.get("arguments", "{}")}})
+        if calls:
+            out["tool_calls"] = calls
+        return out
+
+    def query(self, messages: list, tools: list | None = None) -> dict:
+        self.used_fallback = False
+        ok, res = frontier_chat(messages, model=self.model, timeout=120,
+                                tools=tools, return_message=True)
+        if ok and isinstance(res, dict):
+            return self._to_ollama_message(res)
+        self.last_error = str(res)
+        self.used_fallback = True
+        print(f"{Fore.YELLOW}⚠️ العقل القوي غير متاح ({str(res)[:80]}) — "
+              f"رجعت للموديل المحلي.{Style.RESET_ALL}")
+        return self.fallback.query(messages, tools)
+
+    def chat_simple(self, prompt: str, system: str | None = None,
+                    timeout: int = 180) -> str | None:
+        msgs = ([{"role": "system", "content": system}] if system else []) + \
+               [{"role": "user", "content": prompt}]
+        ok, res = frontier_chat(msgs, model=self.model, timeout=timeout)
+        if ok:
+            return str(res)
+        self.last_error = str(res)
+        self.used_fallback = True
+        return self.fallback.chat_simple(prompt, system, timeout)
 
 
-def get_brain() -> AgentBrain:
+_BRAIN_SINGLETON = None
+
+
+def select_brain(model: str | None = None, base_url: str | None = None,
+                 prefer_frontier: bool | None = None):
+    """يختار العقل: القوي المجاني لو مفعّل ومطلوب، وإلا المحلي.
+
+    التفعيل عبر .env: FRONTIER_API_KEY + AGENT_BRAIN=frontier|local|auto
+    (auto = استخدم القوي لو المفتاح موجود).
+    """
+    local = AgentBrain(model=model or OLLAMA_MODEL,
+                       base_url=base_url or OLLAMA_BASE_URL)
+    mode = (os.getenv("AGENT_BRAIN", "auto") or "auto").strip().lower()
+    if prefer_frontier is None:
+        prefer_frontier = mode in ("frontier", "auto")
+    if prefer_frontier and frontier_configured():
+        return FrontierBrain(fallback=local)
+    if mode == "frontier" and not frontier_configured():
+        print(f"{Fore.YELLOW}⚠️ AGENT_BRAIN=frontier لكن FRONTIER_API_KEY ناقص — "
+              f"استخدمت الموديل المحلي.{Style.RESET_ALL}")
+    return local
+
+
+def get_brain():
     global _BRAIN_SINGLETON
     if _BRAIN_SINGLETON is None:
-        _BRAIN_SINGLETON = AgentBrain()
+        _BRAIN_SINGLETON = select_brain()
     return _BRAIN_SINGLETON
 
 
@@ -2115,6 +2209,13 @@ def self_check() -> int:
     report("no-action detector (أمر تنفيذي)", _looks_like_action("شغّل مشروع THE WAY OUT") is True)
     report("no-action detector (سؤال)", _looks_like_action("ازاي أشغل المشروع؟") is False)
     report("no-action detector (تحية)", _looks_like_action("سلام عليكم") is False)
+    _fb = FrontierBrain(model="x/y")
+    report("brain: اختيار محلي بدون مفتاح", isinstance(select_brain(prefer_frontier=False), AgentBrain))
+    report("brain: تحويل tool_calls", _fb._to_ollama_message(
+        {"content": "", "tool_calls": [{"function": {"name": "browse_web", "arguments": "{}"}}]}
+    ).get("tool_calls", [{}])[0]["function"]["name"] == "browse_web")
+    report("brain: العقل القوي مفعّل؟", True if frontier_configured() else None,
+           "FRONTIER_API_KEY مضبوط" if frontier_configured() else "غير مفعّل (اختياري)")
     report("goal detector (ويب)", _goal_satisfied("اقرأ موقع https://x.com ولخصه", "browse_web") is True)
     report("goal detector (غير متعلق)", _goal_satisfied("اقرأ موقع https://x.com", "delete_file") is False)
     report("goal summary يحتوي الناتج", "ABC" in _goal_summary("اقرأ موقع", "browse_web", "ABC", 1, 0.5))
@@ -2192,6 +2293,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default=OLLAMA_MODEL, help=f"الموديل (افتراضي: {OLLAMA_MODEL})")
     parser.add_argument("--base-url", default=OLLAMA_BASE_URL, help="عنوان Ollama")
     parser.add_argument("--max-steps", type=int, default=AGENT_MAX_STEPS, help="أقصى خطوات لكل أمر")
+    parser.add_argument("--brain", choices=["auto", "local", "frontier"], default=None,
+                        help="اختيار العقل: local (Ollama) أو frontier (قوي مجاني) أو auto")
+    parser.add_argument("--brain-check", action="store_true",
+                        help="فحص اتصال العقل القوي وعرض إرشادات التفعيل")
     parser.add_argument("--toolset", choices=["full", "core"], default=AGENT_TOOLSET if AGENT_TOOLSET in ("full", "core") else "full",
                         help="مجموعة الأدوات (core للموديلات الصغيرة)")
     args = parser.parse_args(argv)
@@ -2210,7 +2315,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         return self_check()
 
-    brain = AgentBrain(model=args.model, base_url=args.base_url)
+    if args.brain_check:
+        if not frontier_configured():
+            print("❌ العقل القوي غير مفعّل (FRONTIER_API_KEY ناقص في .env)\n")
+            print(FRONTIER_SETUP_HELP)
+            return 1
+        fb = FrontierBrain()
+        ok, msg = fb.check_connection()
+        print(("✅ " if ok else "❌ ") + msg)
+        if not ok:
+            print("\n" + FRONTIER_SETUP_HELP)
+        return 0 if ok else 1
+
+    prefer = None if args.brain in (None, "auto") else (args.brain == "frontier")
+    brain = select_brain(model=args.model, base_url=args.base_url,
+                         prefer_frontier=prefer)
+    if isinstance(brain, FrontierBrain):
+        print(f"{Fore.GREEN}🧠 العقل القوي مفعّل: {brain.model} "
+              f"(الرجوع التلقائي: {brain.fallback.model}){Style.RESET_ALL}")
 
     if args.once:
         run_agent(args.once, brain, max_steps=args.max_steps, toolset=args.toolset)

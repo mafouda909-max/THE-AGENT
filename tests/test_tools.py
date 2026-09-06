@@ -500,3 +500,92 @@ def test_goal_summary_contains_result():
 
     out = _goal_summary("اقرأ موقع", "browse_web", "Example Domain content", 2, 1.0)
     assert "Example Domain content" in out and "browse_web" in out
+
+
+# ---------------------------------------------------------------- v3.0 العقل القوي
+def test_select_brain_local_without_key(monkeypatch):
+    import agent
+
+    monkeypatch.setattr(agent, "FRONTIER_API_KEY", "")
+    monkeypatch.setenv("AGENT_BRAIN", "auto")
+    assert isinstance(agent.select_brain(), agent.AgentBrain)
+
+
+def test_select_brain_frontier_with_key(monkeypatch):
+    import agent
+
+    monkeypatch.setattr(agent, "FRONTIER_API_KEY", "sk-test")
+    monkeypatch.setenv("AGENT_BRAIN", "auto")
+    brain = agent.select_brain()
+    assert isinstance(brain, agent.FrontierBrain)
+    assert isinstance(brain.fallback, agent.AgentBrain)
+
+
+def test_select_brain_forced_local(monkeypatch):
+    import agent
+
+    monkeypatch.setattr(agent, "FRONTIER_API_KEY", "sk-test")
+    assert isinstance(agent.select_brain(prefer_frontier=False), agent.AgentBrain)
+
+
+def test_frontier_brain_translates_tool_calls(monkeypatch):
+    import agent
+
+    msg = {"role": "assistant", "content": "",
+           "tool_calls": [{"function": {"name": "browse_web",
+                                        "arguments": '{"url": "https://x.com"}'}}]}
+    monkeypatch.setattr(agent, "frontier_chat",
+                        lambda *a, **k: (True, msg))
+    brain = agent.FrontierBrain(model="test/model")
+    out = brain.query([{"role": "user", "content": "hi"}], tools=[])
+    assert out["tool_calls"][0]["function"]["name"] == "browse_web"
+    assert brain.used_fallback is False
+
+
+def test_frontier_brain_falls_back_to_local(monkeypatch):
+    import agent
+
+    monkeypatch.setattr(agent, "frontier_chat",
+                        lambda *a, **k: (False, "خطأ 429: تجاوزت الحد المجاني"))
+
+    class FakeLocal:
+        model = "local-test"
+
+        def query(self, messages, tools=None):
+            return {"role": "assistant", "content": "من المحلي"}
+
+        def chat_simple(self, prompt, system=None, timeout=180):
+            return "محلي"
+
+    brain = agent.FrontierBrain(model="test/model", fallback=FakeLocal())
+    out = brain.query([{"role": "user", "content": "hi"}])
+    assert out["content"] == "من المحلي"
+    assert brain.used_fallback is True
+    assert "429" in brain.last_error
+
+
+def test_frontier_chat_sends_tools(monkeypatch):
+    import agent
+
+    captured = {}
+
+    class FakeResp:
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode())
+        return FakeResp()
+
+    monkeypatch.setattr(agent, "FRONTIER_API_KEY", "sk-test")
+    monkeypatch.setattr(agent.urllib.request, "urlopen", fake_urlopen)
+    ok, _ = agent.frontier_chat([{"role": "user", "content": "hi"}],
+                                model="m", tools=[{"type": "function"}])
+    assert ok and captured["body"]["tools"]
+    assert captured["body"]["tool_choice"] == "auto"

@@ -5,6 +5,25 @@
 
 ---
 
+## 🧠 العقل القوي المجاني (v3.0)
+
+الإيجنت يقدر يفكّر بموديل كبير مجاني بدل الموديل المحلي الصغير — من غير ما يفقد
+طابعه المحلي: لو الإنترنت وقع أو الحصة المجانية خلصت، **يرجع تلقائياً للموديل المحلي**.
+
+```bash
+# 1) حط مفتاحاً مجانياً في .env
+FRONTIER_API_KEY=sk-or-v1-xxx
+FRONTIER_MODEL=qwen/qwen-2.5-coder-32b-instruct:free
+AGENT_BRAIN=auto        # auto | local | frontier
+
+# 2) تأكد إنه شغال
+python agent.py --brain-check
+
+# 3) شغّل عادي (أو أجبر الاختيار)
+python agent.py --brain frontier
+python agent.py --brain local
+```
+
 ## 🧭 LENS Operator v0.1 (طبقة جديدة)
 
 فوق المحرك، في مشغّل بيخلي كل تنفيذ ينتج **دليل + مراجعة + تعلّم + ذاكرة**:
