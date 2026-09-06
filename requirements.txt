@@ -1,0 +1,7 @@
+# THE WAY OUT Agent v2.0 — الاعتماديات
+colorama>=0.4.6       # ألوان التيرمينال
+requests>=2.31        # (احتياطي — الأساس urllib من المكتبة القياسية)
+beautifulsoup4>=4.12  # تحسين قراءة المواقع + scrape_data مع selector
+python-dotenv>=1.0    # دعم ملف .env
+psutil>=5.9           # تفاصيل RAM/CPU في check_system (يُستغنى عنه عند غيابه)
+pytest>=7.0           # الاختبارات
