@@ -589,3 +589,26 @@ def test_frontier_chat_sends_tools(monkeypatch):
                                 model="m", tools=[{"type": "function"}])
     assert ok and captured["body"]["tools"]
     assert captured["body"]["tool_choice"] == "auto"
+
+
+def test_goal_summary_delivered_on_success_repeat(monkeypatch):
+    """الهدف تحقق ثم كرر الموديل نفس النداء → يُسلَّم المحتوى لا قائمة مقتضبة."""
+    import agent
+
+    calls = {"n": 0}
+
+    class FakeBrain:
+        def query(self, messages, tools=None):
+            calls["n"] += 1
+            return {"role": "assistant", "content": "",
+                    "tool_calls": [{"function": {
+                        "name": "browse_web",
+                        "arguments": '{"url": "https://example.com"}'}}]}
+
+    monkeypatch.setattr(agent.Tools, "browse_web",
+                        staticmethod(lambda url: "📄 محتوى الموقع: Example Domain body"))
+    out = agent.run_agent("اقرأ موقع https://example.com ولخصه", FakeBrain())
+
+    assert "Example Domain body" in out          # المحتوى الحقيقي مسلَّم
+    assert "browse_web" in out
+    assert calls["n"] <= 2                        # وقف بسرعة، مش 3 مرات

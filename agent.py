@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 
 # ---------------------------------------------------------------------------
 # تهيئة اختيارية: colorama + dotenv (الكود يعمل بدونهما)
@@ -1784,8 +1784,13 @@ def _auto_summary(history: list, tools_used: int, dt: float, reason: str) -> str
                 if args.get(k) not in (None, ""):
                     arg_hint = f"({args[k]})"
                     break
-        first_line = snippet.splitlines()[0][:120] if snippet else ""
-        lines.append(f"{icon} {i}. {name}{arg_hint} — {first_line}")
+        body = (snippet or "").strip()
+        if ok and i == 1 and len(history) <= 3:
+            # خطوة ناجحة وحيدة/مكررة: اعرض ناتجها كاملاً بدل سطر مقتضب
+            lines.append(f"{icon} {i}. {name}{arg_hint}:\n{body[:1200]}")
+        else:
+            lines.append(f"{icon} {i}. {name}{arg_hint} — "
+                         f"{body.splitlines()[0][:120] if body else ''}")
     if not history:
         lines.append("(لم تُنفَّذ أي أداة)")
     lines.append(f"📊 (الأدوات المستخدمة: {tools_used} | الوقت: {dt:.1f}s)")
@@ -2029,7 +2034,7 @@ def run_agent(user_query: str, brain: AgentBrain,
             # Self-healing guard: امنع تكرار نفس الاستدعاء الفاشل أكثر من 3 مرات
             # Loop guard: أوقف تكرار نفس الاستدعاء *الناجح* 3 مرات ولخّص تلقائياً
             key = fn_name + json.dumps(args, sort_keys=True, ensure_ascii=False)
-            history.append((fn_name, args, not _looks_failed(result), str(result)[:150]))
+            history.append((fn_name, args, not _looks_failed(result), str(result)[:1500]))
             if _looks_failed(result):
                 success_streak = 0
                 success_key = ""
@@ -2075,6 +2080,15 @@ def run_agent(user_query: str, brain: AgentBrain,
                     success_streak += 1
                 else:
                     success_key, success_streak = key, 1
+                # الهدف تحقق والموديل بيعيد نفس النداء الناجح → سلّم المحتوى فوراً
+                if goal_done is not None and success_streak >= 2:
+                    dt = time.time() - t0
+                    print(f"\n{Fore.YELLOW}🎯 الهدف تحقق والموديل بيكرر — "
+                          f"بسلّم الناتج.{Style.RESET_ALL}")
+                    final = _goal_summary(user_query, goal_done[0], goal_done[1],
+                                          tools_used, dt)
+                    print(f"{Fore.GREEN}{final}{Style.RESET_ALL}\n")
+                    return final
                 if success_streak == 2:
                     result += "\n(تنبيه: كررت نفس الاستدعاء الناجح — لو المهمة اكتملت اكتب التقرير النهائي الآن (نص عربي بدون JSON) وتوقف عن الأدوات.)"
                 elif success_streak >= 3:
