@@ -642,3 +642,23 @@ def test_brain_check_output_is_ascii_safe():
     assert "[X]" in out or "[OK]" in out
     for ch in ("\u274c", "\u2705"):
         assert ch not in out.splitlines()[0]
+
+
+def test_frontier_error_surfaces_provider_message(monkeypatch):
+    """رسالة المزود الحقيقية يجب ألا تُستبدل بتخمين محلي."""
+    import agent
+    import io
+
+    body = json.dumps({"error": {"code": 404,
+                                 "message": "No endpoints found matching your data policy"}})
+
+    def raise_http(req, timeout=0):
+        raise agent.urllib.error.HTTPError(
+            "u", 404, "Not Found", {}, io.BytesIO(body.encode()))
+
+    monkeypatch.setattr(agent, "FRONTIER_API_KEY", "sk-test")
+    monkeypatch.setattr(agent.urllib.request, "urlopen", raise_http)
+    ok, msg = agent.frontier_chat([{"role": "user", "content": "hi"}], model="m/x")
+    assert ok is False
+    assert "No endpoints found matching your data policy" in msg   # الرسالة الحقيقية
+    assert "settings/privacy" in msg                                # الإرشاد الصحيح

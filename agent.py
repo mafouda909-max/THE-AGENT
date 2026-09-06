@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-__version__ = "3.1.1"
+__version__ = "3.1.2"
 
 # ---------------------------------------------------------------------------
 # ترميز آمن على Windows: لازم قبل colorama.
@@ -236,11 +236,23 @@ def frontier_chat(messages: list, model: str | None = None,
             detail = e.read().decode("utf-8", errors="ignore")[:300]
         except Exception:
             detail = ""
+        # رسالة المزود الحقيقية أهم من أي تخمين — نستخرجها ونعرضها دائماً
+        provider_msg = ""
+        try:
+            provider_msg = str(json.loads(detail).get("error", {}).get("message", ""))
+        except Exception:
+            provider_msg = detail
         hints = {401: "المفتاح غلط أو منتهي — راجع FRONTIER_API_KEY.",
                  402: "رصيد غير كافٍ — استخدم موديلاً مجانياً (...:free).",
-                 404: f"الموديل `{mdl}` غير موجود على المزود.",
+                 403: "مرفوض — غالباً إعدادات الخصوصية/الصلاحيات على حسابك.",
+                 404: (f"الموديل `{mdl}` غير متاح لحسابك. الأشهر: الموديلات "
+                       f"المجانية تحتاج تفعيل سياسة البيانات من "
+                       f"https://openrouter.ai/settings/privacy"),
                  429: "تجاوزت الحد المجاني — انتظر دقيقة وحاول."}
-        return False, f"خطأ {e.code}: {hints.get(e.code, detail or e.reason)}"
+        msg = f"خطأ {e.code}: {hints.get(e.code, e.reason)}"
+        if provider_msg:
+            msg += f"\n   ↳ رسالة المزود: {provider_msg[:200]}"
+        return False, msg
     except Exception as e:  # noqa: BLE001
         return False, f"فشل الاتصال بالمزود: {e}"
     choices = data.get("choices", [])
